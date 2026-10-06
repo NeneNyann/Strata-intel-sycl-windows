@@ -1,6 +1,6 @@
 @echo off
 rem Strata for Windows: the first run installs everything and starts the model; later runs just start it.
-rem Needs only an NVIDIA or AMD graphics driver. Python is installed for your user account if it is missing (no admin needed).
+rem Release engines need only an NVIDIA, AMD or Intel Arc graphics driver. Python is installed for your user account if missing.
 setlocal
 title Strata
 cd /d "%~dp0"

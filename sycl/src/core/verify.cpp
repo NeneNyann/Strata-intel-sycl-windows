@@ -533,9 +533,9 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         */
         if (!ok2) {; device_plan_ = false; }
     }
-    if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: the per-layer residual ladder (token 0)
-        dbgR_ = (float*) sycl::malloc_device((size_t) g.n_layers * g.n_embd * 4, dpct::get_in_order_queue());
-        dbgM_ = (float*) sycl::malloc_device((size_t) g.n_layers * g.n_embd * 4, dpct::get_in_order_queue());
+    if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // include speculative rows in the per-layer ladder
+        dbgR_ = (float*) sycl::malloc_device((size_t) g.n_layers * max_t_ * g.n_embd * 4, dpct::get_in_order_queue());
+        dbgM_ = (float*) sycl::malloc_device((size_t) g.n_layers * max_t_ * g.n_embd * 4, dpct::get_in_order_queue());
     }
     std::fprintf(stderr, "strata verify: window up to %d tokens, %.1f MiB of device buffers\n", max_t,
                  (double) count.used / 1048576.0);
@@ -1021,9 +1021,12 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
     for (int64_t l = lb_; l < le_; ++l)
         for (int grp = 0; grp < G; ++grp) {
             if (!post(l, grp)) return false;
-            if (dbgR_ && grp == 0) {   // recorded into the window graph as memcpy nodes
-                cs->memcpy(dbgR_ + (size_t) l * N, Rt(0), (size_t) N * 4);
-                cs->memcpy(dbgM_ + (size_t) l * N, mixed_, (size_t) N * 4);
+            if (dbgR_) {   // recorded into the window graph as memcpy nodes
+                for (int t = tb_[grp]; t < te_[grp]; ++t) {
+                    const size_t at = (size_t) (l * MT + t) * N;
+                    cs->memcpy(dbgR_ + at, Rt(t), (size_t) N * 4);
+                    cs->memcpy(dbgM_ + at, mixed_ + (size_t) t * N, (size_t) N * 4);
+                }
             }
             if (l + 1 < le_ && !pre(l + 1, grp)) return false;
         }
@@ -1472,12 +1475,12 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         err = std::string("verify: ") + dpct::get_error_string_dummy(se);
         return false;
     }
-    if (no_host && std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: what the window left behind
+    if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // SYCL port: what either execution path left behind
         const int Gd = groups_[T] > 0 ? groups_[T] : 1;
         std::vector<uint32_t> sk((size_t) Gd, 0);
         std::vector<int32_t> id0((size_t) ss.k, 0);
         std::vector<int32_t> res0((size_t) 16, 0);
-        cs_->memcpy(sk.data(), skip_, sk.size() * 4).wait();
+        if (skip_) cs_->memcpy(sk.data(), skip_, sk.size() * 4).wait();
         cs_->memcpy(id0.data(), ids_, id0.size() * 4).wait();
         cs_->memcpy(res0.data(), hits_.d_res, res0.size() * 4).wait();
         std::fprintf(stderr, "verify dbg: window T=%d: host seq=%u (expected %lld), skip[]=", T, *(volatile uint32_t*) h_seq_,
@@ -1503,18 +1506,21 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         };
         if (dbgR_) {
             const size_t N = (size_t) g.n_embd;
-            std::vector<float> r((size_t) g.n_layers * N), m((size_t) g.n_layers * N);
+            std::vector<float> r((size_t) g.n_layers * max_t_ * N), m((size_t) g.n_layers * max_t_ * N);
             cs_->memcpy(r.data(), dbgR_, r.size() * 4).wait();
             cs_->memcpy(m.data(), dbgM_, m.size() * 4).wait();
             for (int64_t l = 0; l < g.n_layers; ++l) {
-                double sr = 0, sm = 0; size_t nr = 0, nm = 0;
-                for (size_t i = 0; i < N; ++i) {
-                    const float x = r[(size_t) l * N + i], y = m[(size_t) l * N + i];
-                    if (std::isfinite(x)) sr += std::fabs(x); else ++nr;
-                    if (std::isfinite(y)) sm += std::fabs(y); else ++nm;
+                for (int t = 0; t < T; ++t) {
+                    double sr = 0, sm = 0; size_t nr = 0, nm = 0;
+                    for (size_t i = 0; i < N; ++i) {
+                        const size_t at = ((size_t) l * max_t_ + t) * N + i;
+                        const float x = r[at], y = m[at];
+                        if (std::isfinite(x)) sr += std::fabs(x); else ++nr;
+                        if (std::isfinite(y)) sm += std::fabs(y); else ++nm;
+                    }
+                    std::fprintf(stderr, "verify dbg:   layer %2lld %s row %d  R mean|.|=%.4g nonfinite=%zu   mixed mean|.|=%.4g nonfinite=%zu\n",
+                                 (long long) l, is_qsa_layer(g, l) ? "QSA" : "GDN", t, sr / N, nr, sm / N, nm);
                 }
-                std::fprintf(stderr, "verify dbg:   layer %2lld %s  R mean|.|=%.4g nonfinite=%zu   mixed mean|.|=%.4g nonfinite=%zu\n",
-                             (long long) l, is_qsa_layer(g, l) ? "QSA" : "GDN", sr / N, nr, sm / N, nm);
             }
         }
         {   // the device plan of the last layer group and the MoE parts it produced (token 0)

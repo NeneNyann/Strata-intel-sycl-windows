@@ -10,8 +10,13 @@
 #
 # Device code is JIT-compiled from SPIR-V unless STRATA_SYCL_AOT names a device (bmg-g31 for the Arc Pro B70).
 cmake_minimum_required(VERSION 3.24)
-project(strata_sycl VERSION 0.1.39 LANGUAGES C CXX)   # the upstream engine version this port tracks
+project(strata_sycl VERSION 0.1.40 LANGUAGES C CXX)   # the upstream engine version this port tracks
 set(STRATA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
+option(STRATA_PORTABLE "build for other PCs: AVX2 ggml baseline" OFF)
+if(STRATA_PORTABLE AND MSVC)
+  # DPC++ rejects /MT with -fsycl. The release zip bundles the dynamic Microsoft runtime.
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -48,7 +53,12 @@ list(APPEND _sycl_flags -fsycl-default-sub-group-size=32)
 # split the first launch in the prompt path (the embedding gather) paid 245 ms for the image it shared (2026-09-30).
 list(APPEND _sycl_link -fsycl-device-code-split=per_kernel)
 list(APPEND _sycl_flags -fsycl-device-code-split=per_kernel)
-add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" -fp-model=precise -Wno-unused-parameter
+set(_fp_precise -fp-model=precise)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  # Windows icx uses clang-cl: -fp-model=precise is ignored by this frontend.
+  set(_fp_precise /fp:precise)
+endif()
+add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:${_sycl_flags}>" ${_fp_precise} -Wno-unused-parameter
                     -Wno-unused-variable -Wno-deprecated-declarations)
 add_link_options(${_sycl_link})
 
@@ -105,7 +115,14 @@ if(STRATA_NATIVE_EXPERTS)
   set(GGML_BACKEND_DL OFF CACHE BOOL "" FORCE)
   set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-  set(GGML_NATIVE ON CACHE BOOL "" FORCE)
+  if(STRATA_PORTABLE)
+    set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
+    foreach(_f GGML_AVX GGML_AVX2 GGML_FMA GGML_F16C GGML_BMI2)
+      set(${_f} ON CACHE BOOL "" FORCE)
+    endforeach()
+  else()
+    set(GGML_NATIVE ON CACHE BOOL "" FORCE)
+  endif()
   if(STRATA_GGML_DIR)
     add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   else()
@@ -133,7 +150,7 @@ if(STRATA_NATIVE_EXPERTS)
 endif()
 
 # --- the GPU engine ------------------------------------------------------------------------------------------------
-strata_resolve(_core src/core/device.cu src/core/pinned.cu src/platform/memory.cpp src/core/graph.cpp
+strata_resolve(_core src/core/device.cu src/core/pinned.cu src/core/vmm.cpp src/platform/memory.cpp src/core/graph.cpp
                      src/core/weights.cpp src/core/layout.cpp)
 add_library(strata_core STATIC ${_core})
 target_link_libraries(strata_core PUBLIC strata_includes)
@@ -150,6 +167,11 @@ endforeach()
 strata_resolve(_kernels ${_kernel_files} src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp)
 list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_xmx.dp.cpp)   # port-only: the XMX prompt attention
 add_library(strata_kernels STATIC ${_kernels})
+if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  # The grouped expert paths compare intermediate bytes too: keep multiply/add rounding separate.
+  set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/s2_expert_grouped.dp.cpp
+    PROPERTIES COMPILE_OPTIONS "/clang:-ffp-contract=off")
+endif()
 target_include_directories(strata_kernels PRIVATE ${STRATA_ROOT}/third_party/ggml)
 target_link_libraries(strata_kernels PUBLIC strata_core)
 
@@ -166,13 +188,19 @@ target_link_libraries(strata_engine PUBLIC strata_core strata_kernels strata_ker
 strata_resolve(_prefill src/prefill/gemm.cu src/prefill/kernels.cu src/prefill/prefill.cpp)
 add_library(strata_prefill STATIC ${_prefill}
             ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_fused_stub.cpp)   # upstream's fused int8 kernels: not built here
-target_compile_options(strata_prefill PUBLIC -qmkl=sequential)
-target_link_options(strata_prefill PUBLIC -qmkl=sequential)
+set(_mkl_sequential -qmkl=sequential)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+  set(_mkl_sequential /Qmkl=sequential)
+endif()
+target_compile_options(strata_prefill PUBLIC ${_mkl_sequential})
+target_link_options(strata_prefill PUBLIC ${_mkl_sequential})
 target_link_libraries(strata_prefill PUBLIC strata_engine)
 
 strata_resolve(_main src/program/generate.cpp)
 add_executable(strata ${_main})
 target_link_libraries(strata PRIVATE strata_engine strata_prefill strata_spec)
+add_executable(strata-device ${CMAKE_CURRENT_SOURCE_DIR}/src/program/device.cpp)
+target_link_libraries(strata-device PRIVATE strata_includes)
 
 # --- the kernel parity self-tests (each runs on the card and compares against a CPU reference) ---------------------
 option(STRATA_SYCL_PARITY "Build the kernel parity tests" ON)

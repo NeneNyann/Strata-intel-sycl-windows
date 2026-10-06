@@ -4,18 +4,31 @@
 // and a one-thread kernel spins on a flag the host writes. In CUDA those are `volatile` loads and stores, which
 // nvcc turns into cache-bypassing accesses. A `volatile` in SYCL device code carries no such meaning on Intel
 // GPUs: the spin read its first value from L3 forever (measured: the GPU at 100% and the host seeing no ring).
-// Atomic loads and stores with system scope are the accesses that go to memory, so every side of the handshake
-// goes through these two.
+// Reads use an explicit uncached hint: system-scope atomic loads can still return a cached host flag (#889).
+// Stores retain system-scope atomics and a release fence.
 #pragma once
 #include <sycl/sycl.hpp>
+#include <sycl/ext/intel/experimental/cache_control_properties.hpp>
 #include <cstdint>
 
 namespace strata {
 using sys_atomic_u32 = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::system>;
 
+#ifndef STRATA_DOORBELL_ATOMIC_LOAD
+using doorbell_uncached_read = decltype(sycl::ext::oneapi::experimental::properties(
+    sycl::ext::intel::experimental::read_hint<sycl::ext::intel::experimental::cache_control<
+        sycl::ext::intel::experimental::cache_mode::uncached,
+        sycl::ext::oneapi::experimental::cache_level::L1, sycl::ext::oneapi::experimental::cache_level::L3>>));
+inline uint32_t sys_load(const volatile uint32_t* p) {
+    sycl::atomic_fence(sycl::memory_order::acquire, sycl::memory_scope::system);
+    sycl::ext::oneapi::experimental::annotated_ptr<uint32_t, doorbell_uncached_read> u(const_cast<uint32_t*>(p));
+    return u[0];
+}
+#else
 inline uint32_t sys_load(const volatile uint32_t* p) {
     return sys_atomic_u32(*const_cast<uint32_t*>(p)).load();
 }
+#endif
 inline void sys_store(volatile uint32_t* p, uint32_t v) {
     sys_atomic_u32(*const_cast<uint32_t*>(p)).store(v);
     sycl::atomic_fence(sycl::memory_order::release, sycl::memory_scope::system);
@@ -25,5 +38,5 @@ inline void sys_store(volatile uint32_t* p, uint32_t v) {
 // xe driver times the queue out, resets the GT node by node (a window graph has 2,366 of them), and the card
 // stays wedged until a reboot - measured twice. With a bound the failure is a wrong window instead, which the
 // verifier's checks catch. ~2 M host-memory reads is a few seconds at PCIe latency.
-inline constexpr uint32_t kSpinMax = 20u * 1000u;   // experiment: 100x smaller
+inline constexpr uint32_t kSpinMax = 2u * 1000u * 1000u;
 }  // namespace strata

@@ -9,7 +9,8 @@ The code is in `sycl/`, and the port's own notes, measurements and maintenance p
 we have not run it on an Arc. Every result on Arc hardware below comes from the community. The NVIDIA and AMD
 engines are unchanged: the Intel build is a separate CMake target, off by default.
 
-There is **no ready-made Intel engine** in the release zips. You build it from source on Linux.
+**Windows:** use `START-HERE.bat --backend sycl`; the release package includes the runtimes and GPU image encoder.
+See [Windows installation](SYCL_WINDOWS.md). **Linux:** build from source using this page.
 
 ## What has been run, and by whom
 
@@ -48,9 +49,9 @@ Full flags, per-request timings and engine logs are in the report linked in the 
 - **Unchanged:** the CUDA engine's greedy output, checked byte-identical against the gated 0.1.39 build (Q2_0 and Coder).
   The HIP build is not affected (the option is off by default).
 
-**Not tested by anyone yet:** Windows (no native build path; see below), Arc on WSL2 for the 0.1.39 port, the Alchemist
+**Not tested by anyone yet:** Arc on WSL2 for the 0.1.39 port, the Alchemist
 A-series, integrated Arc GPUs (the B390 / Panther Lake in #515; the shared-memory planning does not exist yet), and
-images (not wired on Intel).
+images on Linux (the short native Windows vision check is documented in [SYCL_WINDOWS.md](SYCL_WINDOWS.md)).
 
 ## What you need
 
@@ -133,11 +134,11 @@ Things that matter on an Arc (details in INTEL.md):
 
 ## Windows
 
-There is no Windows path yet. `setup --backend sycl` on Windows stops and points here. oneAPI exists for Windows,
-but `sycl/CMakeLists.txt` uses GCC-style flags (`-mavx512f`, `-fp-model=precise`, `-qmkl`) and the runner is a
-bash/Docker script, so a native Windows build would need work. Nobody has tried it. WSL2 with an Arc has been
-used by one tester (the B580 row above), but setup cannot detect the card there, because it reads `/sys/class/drm`,
-which WSL2 does not have.
+Use the native Windows release package with `START-HERE.bat --backend sycl`.
+Installation, images and source builds: [SYCL_WINDOWS.md](SYCL_WINDOWS.md).
+
+WSL2 with an Arc was used by one tester (the earlier B580 row above), but setup cannot detect the card there,
+because it reads `/sys/class/drm`, which WSL2 does not have.
 
 ## Reporting a problem
 

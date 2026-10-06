@@ -9,7 +9,7 @@
 //
 // It is slow per blob (three reads, ~2.7 MB) and that is fine: the profile fill reads each expert once at start,
 // the prefill's lent slots are refilled a few hundred at a time, and with every expert resident the pool never
-// asks. `pinned()` is false and `device_alias()` null, so nothing tries to DMA from it.
+// asks. Without a host mirror, `pinned()` is false and `device_alias()` null, so nothing tries to DMA from it.
 #pragma once
 
 #include "strata/core/expert_source.hpp"
@@ -69,9 +69,12 @@ private:
     std::mutex mu_;
     int64_t n_layers_ = 0, n_expert_ = 0;
     int64_t reads_ = 0;
-    uint8_t* mirror_ = nullptr;                    ///< USM host (pinned, device-readable)
+    uint8_t* mirror_ = nullptr;                    ///< first USM host segment; null when no mirror is loaded
+    std::vector<uint8_t*> mirror_segments_;        ///< Windows allocations stay below the driver's single-allocation limit
+    uint64_t mirror_segment_bytes_ = 0;
+    uint8_t* mirror_at(uint64_t offset) const;
     uint64_t mirror_bytes_ = 0;
-    std::vector<int64_t> mirror_off_;              ///< per (layer, expert): offset in mirror_, -1 = not mirrored
+    std::vector<int64_t> mirror_off_;              ///< per (layer, expert): logical offset across segments, -1 = not mirrored
     std::vector<int64_t> layer_first_;             ///< per layer: offset of its first mirrored blob, -1 = none
 };
 

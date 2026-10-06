@@ -3797,12 +3797,18 @@ int main(int argc, char **argv) try {
                     std::find(miss.begin(), miss.end(), std::pair<int64_t, int64_t>{l, e}) == miss.end())
                     miss.push_back({l, e});
         uint64_t avail = 0;
+#if defined(_WIN32)
+        MEMORYSTATUSEX mirror_mem{};
+        mirror_mem.dwLength = sizeof mirror_mem;
+        if (GlobalMemoryStatusEx(&mirror_mem)) avail = mirror_mem.ullAvailPhys;
+#else
         if (FILE* f = std::fopen("/proc/meminfo", "r")) {
             char key[64]; unsigned long long kb = 0;
             while (std::fscanf(f, "%63s %llu kB", key, &kb) == 2)
                 if (std::strcmp(key, "MemAvailable:") == 0) { avail = kb << 10; break; }
             std::fclose(f);
         }
+#endif
         const char* mv = std::getenv("STRATA_MIRROR_MIB");
         const uint64_t cap = mv ? (uint64_t) std::atoll(mv) << 20 : (avail > (4ull << 30) ? avail - (4ull << 30) : 0);
         if (!miss.empty() && cap > 0) {
@@ -3829,10 +3835,16 @@ int main(int argc, char **argv) try {
         }
         unmirrored_misses = (int64_t) miss.size() - (int64_t) (gguf_src.mirrored_bytes() ? std::count_if(miss.begin(), miss.end(),
             [&](const std::pair<int64_t, int64_t>& pr) { return gguf_src.pinned(pr.first, pr.second); }) : 0);
-        if (unmirrored_misses > 0 && std::getenv("STRATA_VERIFY_NO_HOST") != nullptr)
-            std::fprintf(stderr, "strata generate: WARNING: %lld experts are neither in VRAM nor mirrored; with STRATA_VERIFY_NO_HOST "
-                                 "the device plan cannot run them and their layers' windows fall back slowly - raise "
-                                 "STRATA_MIRROR_MIB or the free RAM, or lower --max-context\n", (long long) unmirrored_misses);
+        if (std::getenv("STRATA_VERIFY_NO_HOST") != nullptr) {
+            const char* device_plan = std::getenv("STRATA_VERIFY_DEVICE_PLAN");
+            if (unmirrored_misses > 0 || device_plan == nullptr || std::atoi(device_plan) == 0) {
+                std::fprintf(stderr, "strata generate: STRATA_VERIFY_NO_HOST requires STRATA_VERIFY_DEVICE_PLAN=1 and "
+                                     "every expert in VRAM or the host mirror (%lld missing). Unset STRATA_VERIFY_NO_HOST "
+                                     "to use the CPU fallback, or increase STRATA_MIRROR_MIB and available RAM.\n",
+                             (long long) unmirrored_misses);
+                return 2;
+            }
+        }
     }
 
     for (auto& stp : stages) {

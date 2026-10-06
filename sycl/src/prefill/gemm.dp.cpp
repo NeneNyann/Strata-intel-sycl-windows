@@ -439,7 +439,7 @@ catch (sycl::exception const &exc) {
 }
 
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
-                float beta) {
+                float beta, int64_t ldx) {
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     const float alpha = 1.0f;
@@ -455,7 +455,7 @@ void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64
            (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
            oneapi::mkl::transpose::nontrans, (int)N, (int)T, (int)K, &alpha, W,
            dpct::library_data_t::real_bfloat16, (int)K, X,
-           dpct::library_data_t::real_bfloat16, (int)K, &beta, Y,
+           dpct::library_data_t::real_bfloat16, (int)(ldx > 0 ? ldx : K), &beta, Y,
            dpct::library_data_t::real_float, (int)ldy,
            dpct::compute_type::f32)),
        "cublasGemmEx");
@@ -486,7 +486,21 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
 }
 
 void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float* Y, int64_t T, int64_t N, int64_t K,
-                  int64_t ldy, float beta) {
+                  int64_t ldy, float beta, int64_t ldx) {
+    auto product = [&](float* out, int64_t rows) {
+        if (ldx <= 0 || ldx == K) {
+            f16(X, scratch_, out, T, rows, K, ldy, beta);
+            return;
+        }
+        const float alpha = 1.0f;
+        ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
+               (dpct::blas::descriptor_ptr)handle_, oneapi::mkl::transpose::trans,
+               oneapi::mkl::transpose::nontrans, (int)rows, (int)T, (int)K, &alpha, scratch_,
+               dpct::library_data_t::real_half, (int)K, X,
+               dpct::library_data_t::real_half, (int)ldx, &beta, out,
+               dpct::library_data_t::real_float, (int)(ldy > 0 ? ldy : rows), dpct::compute_type::f32)),
+           "oneMKL native GEMM with padded activations");
+    };
     if (N * K > scratch_elems_) {
         // Too large for the scratch at once: in row slices.
         const int64_t rows = scratch_elems_ / K;
@@ -495,12 +509,12 @@ void Gemm::native(const uint16_t* X, int ggml_type, const void* W_blocks, float*
         for (int64_t r0 = 0; r0 < N; r0 += rows) {
             const int64_t n = (N - r0 < rows) ? N - r0 : rows;
             strata::kernels::dequant_f16(ggml_type, W_blocks, r0, n, K, scratch_, stream_);
-            f16(X, scratch_, Y + r0, T, n, K, ldy, beta);
+            product(Y + r0, n);
         }
         return;
     }
     strata::kernels::dequant_f16(ggml_type, W_blocks, 0, N, K, scratch_, stream_);
-    f16(X, scratch_, Y, T, N, K, ldy, beta);
+    product(Y, N);
 }
 
 }  // namespace strata::prefill

@@ -3543,7 +3543,11 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
         refresh_draft_vocab(Path(cfg["args"][cfg["args"].index("--mtp") + 1]), cfg.get("draft_vocab", "cjk"))
     cmd = [sys.executable, str(ROOT / "serve" / "server.py"), "--engine", "strata", "--config", str(cfg_path),
            "--port", str(port or cfg.get("port", 8080))]
-    if cfg.get("backend") == "hip":                    # AMD, numbered as HIP numbers them (setup's KFD order)
+    if cfg.get("backend") == "sycl" and WIN:
+        from sycl.setup_windows import update_selected_gpu
+        cfg = update_selected_gpu(cfg_path, cfg, gpu)
+        gpu = None
+    elif cfg.get("backend") == "hip":                 # AMD, numbered as HIP numbers them (setup's KFD order)
         if WIN:
             hip_runtime_beside_exe(Path(cfg["exe"]).parent)   # #468 #461: also fixes a 0.1.34 install
         amd = amd_gpus()
@@ -3578,7 +3582,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
         OLD_GPUS = OLD_GPUS or old_gpus_opt_in(found, gpu if isinstance(gpu, list) else [gpu] if gpu is not None else
                                                cfg.get("gpu") if isinstance(cfg.get("gpu"), list) else [cfg.get("gpu")],
                                                12 if config_toolkit(cfg) == 12 else None)
-    if cfg.get("backend") == "hip":
+    if cfg.get("backend") in ("hip", "sycl"):
         pass
     elif isinstance(gpu, list):                        # --gpus: saved, this model runs on these cards from now on
         check_gpus(gpu, found, yes=yes, named=True)
@@ -3597,7 +3601,7 @@ def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_
     # #364 #384: a resident low-RAM config on several GPUs; #498: a UD-Q4_K_XL config with its RAM budget (by hand)
     if isinstance(use, list) and (split_mmap(cfg) | split_budget(cfg)):
         write_config(cfg_path, cfg)
-    if cfg.get("backend") == "hip":
+    if cfg.get("backend") in ("hip", "sycl"):
         pass
     elif isinstance(use, list):
         check_gpus(use, found, "(chosen for this model) ", yes=True, named=True)
@@ -4002,17 +4006,16 @@ def resolve_rope(ctx: int, scaling, scale, trained: int = 262144):
 
 # ------------------------------------------------------------------------------------------------ main
 def sycl_setup(argv) -> int:
-    """--backend sycl: the Intel Arc engine (the SYCL port in sycl/, PR #423), experimental. There is no ready-made
-    Intel engine: it is compiled from source on the PC (docs/INTEL_ARC.md), then sycl/setup_intel.py runs this setup
-    with the Intel steps swapped in. Nothing of the CUDA / HIP paths is used or changed."""
+    """Intel Arc setup: native release packages on Windows, the existing source/container path on Linux."""
     say()
     warn("Intel Arc (--backend sycl) is EXPERIMENTAL: a community port of the engine, not tested by the Strata "
          "maintainers (no Intel card here). Expect rough edges; issues with your card and driver versions help.")
     if WIN:
-        fail("the Intel Arc engine has no Windows setup yet (no ready-made Intel engine either)",
-             "run it on Linux (Ubuntu 24.04 with Intel's GPU driver and oneAPI): docs/INTEL_ARC.md")
-    say("  There is no ready-made Intel engine: it is built from source with Intel oneAPI (icpx + oneMKL),")
-    say("  docs/INTEL_ARC.md. Setup continues with sycl/setup_intel.py.")
+        say("  Windows uses strata-windows-x64-sycl.zip, with the Intel runtimes and image encoder bundled.")
+        say("  Setup continues with sycl/setup_windows.py (docs/SYCL_WINDOWS.md).")
+    else:
+        say("  The Linux Intel engine is built from source with Intel oneAPI (icpx + oneMKL).")
+        say("  Setup continues with sycl/setup_intel.py (docs/INTEL_ARC.md).")
     rest, skip = [], False
     for x in argv:                                     # setup_intel.py drives this setup through its AMD path
         if skip:
@@ -4021,10 +4024,25 @@ def sycl_setup(argv) -> int:
             skip = True
         elif not x.startswith("--backend="):
             rest.append(x)
-    script = ROOT / "sycl" / "setup_intel.py"
+    script = ROOT / "sycl" / ("setup_windows.py" if WIN else "setup_intel.py")
     if not script.exists():
         fail(f"{script} is missing", "use a full Strata checkout (git clone) - docs/INTEL_ARC.md")
     return subprocess.call([sys.executable, str(script), *rest])
+
+
+def auto_sycl_windows() -> bool:
+    """Resume an Intel install, or select Arc when neither a usable NVIDIA nor AMD card is present."""
+    if not WIN:
+        return False
+    for p in sorted(ROOT.glob("strata-*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            return json.loads(p.read_text(encoding="utf-8-sig")).get("backend") == "sycl"
+        except (OSError, ValueError):
+            pass
+    if any(gpu_problem(g) is None for g in gpus()) or any(amd_problem(g) is None for g in amd_gpus()):
+        return False
+    from sycl.setup_windows import intel_gpus
+    return bool(intel_gpus())
 
 
 def main() -> int:
@@ -4118,10 +4136,10 @@ def main() -> int:
     ap.add_argument("--backend", choices=["cuda", "hip", "sycl"],
                     help="cuda = NVIDIA (default), hip = AMD RX 7900 / 7800 / 7700 XT, RX 9060 XT / 9070 / AI PRO R9700 on "
                          "Linux or Windows (chosen by itself when the PC has no NVIDIA card Strata can use), "
-                         "sycl = Intel Arc, EXPERIMENTAL: Linux, built from source (docs/INTEL_ARC.md)")
+                         "sycl = Intel Arc, EXPERIMENTAL: Windows release zip or Linux source build (docs/INTEL_ARC.md)")
     ap.add_argument("--skip-build", action="store_true", help=argparse.SUPPRESS)
     a = ap.parse_args()
-    if a.backend == "sycl":                            # Intel Arc: the SYCL port's own setup (sycl/setup_intel.py)
+    if a.backend == "sycl" or (a.backend is None and auto_sycl_windows()):
         return sycl_setup(sys.argv[1:])
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
         ap.error("--resident-budget-gib takes a number of GiB above 0, e.g. --resident-budget-gib 32")

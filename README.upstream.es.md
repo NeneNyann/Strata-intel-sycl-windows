@@ -1,6 +1,6 @@
 <h1 align="center">Strata</h1>
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [Deutsch](README.de.md) · [Français](README.fr.md) · **Español** · [Português](README.pt-BR.md)
+[English](README.upstream.md) · [简体中文](README.upstream.zh-CN.md) · [日本語](README.upstream.ja.md) · [Deutsch](README.upstream.de.md) · [Français](README.upstream.fr.md) · **Español** · [Português](README.upstream.pt-BR.md)
 
 <p align="center"><b>Ejecuta un modelo de IA de 125 mil millones de parámetros en tu propio PC gaming</b><br>
 Tarjeta gráfica NVIDIA o AMD (12 GB o más) · Windows o Linux · libre y de código abierto</p>
@@ -65,11 +65,13 @@ El instalador prepara todo lo demás. Dos o tres tarjetas pueden repartirse el m
 Experimental, escrito y probado por miembros de la comunidad en sus propios equipos:
 
 - **Tarjetas gráficas antiguas** (Tesla P40 / V100, GTX 10, Radeon VII / MI50, RX 6700 XT, RX 5500 XT): [Older GPUs](docs/OLDER_GPUS.md).
-- **Intel Arc**, compilado desde el código fuente en Linux: [Intel Arc](docs/INTEL_ARC.md).
+- **Intel Arc (experimental):** [instalación y paquete para Windows](docs/SYCL_WINDOWS.md), [compilación en Linux](docs/INTEL_ARC.md).
 - **AMD Ryzen AI Max (Strix Halo)**, compilado desde el código fuente en Linux: [Strix Halo](docs/STRIX_HALO.md).
 - **Procesadores antiguos sin AVX2**: funcionan, pero despacio. [Older CPUs](docs/INSTALL.md#older-cpus-experimental).
 
 La lista completa: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
+
+En Windows, selecciona Intel con `START-HERE.bat --backend sycl`; añade `--setup --vision gpu` para activar imágenes. B580 de 12 GB con IQ2_XS + MTP: 31,46 tok/s medidos ([benchmark y condiciones](docs/SYCL_WINDOWS.md#benchmark)).
 
 ## Instalación
 
@@ -78,7 +80,7 @@ La lista completa: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
 ¿Usas un asistente de programación con IA (Claude Code, Cursor, Codex, GitHub Copilot, ...)? Pega esto en él:
 
 ```text
-Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
+Set up Strata on this PC for me: https://github.com/NeneNyann/Strata-intel-sycl-windows - follow docs/AI_SETUP.md in that repository.
 ```
 
 Revisa tu tarjeta gráfica, tu RAM y tu disco, y elige el modelo que cabe. Luego lo instala, lo arranca y te explica
@@ -87,10 +89,10 @@ cómo conectar tus aplicaciones. Las herramientas de IA también pueden instalar
 
 ### O hazlo tú mismo
 
-[Descarga Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) y descomprímelo (o usa `git clone`).
+[Descarga Strata](https://github.com/NeneNyann/Strata-intel-sycl-windows/archive/refs/heads/main.zip) y descomprímelo (o usa `git clone`).
 **Windows:** haz doble clic en **`START-HERE.bat`**. **Linux:** ejecuta **`./setup.sh`** en la carpeta de Strata.
 
-Los pasos son los mismos para NVIDIA y AMD. El instalador detecta tu tarjeta y prepara el motor adecuado para ella.
+Los pasos son los mismos para NVIDIA, AMD y el soporte experimental de Intel Arc en Windows. El instalador detecta tu tarjeta y prepara el motor adecuado para ella.
 Te hace unas pocas preguntas:
 
 - qué modelo y qué tamaño,

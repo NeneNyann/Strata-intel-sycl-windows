@@ -1,6 +1,6 @@
 <h1 align="center">Strata</h1>
 
-[English](README.md) · [简体中文](README.zh-CN.md) · **日本語** · [Deutsch](README.de.md) · [Français](README.fr.md) · [Español](README.es.md) · [Português](README.pt-BR.md)
+[English](README.upstream.md) · [简体中文](README.upstream.zh-CN.md) · **日本語** · [Deutsch](README.upstream.de.md) · [Français](README.upstream.fr.md) · [Español](README.upstream.es.md) · [Português](README.upstream.pt-BR.md)
 
 <p align="center"><b>1,250 億パラメータの AI モデルを、手元のゲーミング PC で動かす</b><br>
 NVIDIA または AMD のグラフィックカード（12 GB 以上） · Windows または Linux · 無料のオープンソース</p>
@@ -65,11 +65,13 @@ NVIDIA：Q2_0 はエンジン 0.1.36、ほかの行は 0.1.26 で測定（回答
 試験的なサポート。コミュニティのメンバーが自分のマシンで書き、テストしたものです：
 
 - **古いグラフィックカード**（Tesla P40 / V100、GTX 10、Radeon VII / MI50、RX 6700 XT、RX 5500 XT）：[Older GPUs](docs/OLDER_GPUS.md)。
-- **Intel Arc**（Linux でソースからビルド）：[Intel Arc](docs/INTEL_ARC.md)。
+- **Intel Arc（実験的）：** [Windows のインストールとリリースパッケージ](docs/SYCL_WINDOWS.md)、[Linux のソースビルド](docs/INTEL_ARC.md)。
 - **AMD Ryzen AI Max（Strix Halo）**（Linux でソースからビルド）：[Strix Halo](docs/STRIX_HALO.md)。
 - **AVX2 のない古いプロセッサー**：動きますが、遅いです。[Older CPUs](docs/INSTALL.md#older-cpus-experimental)。
 
 全リスト：[docs/INSTALL.md](docs/INSTALL.md#what-you-need)。
+
+Windows では `START-HERE.bat --backend sycl` で Intel を選択し、`--setup --vision gpu` を追加すると画像を有効にできます。B580 12 GB、IQ2_XS + MTP の実測値は 31.46 tok/s です（[ベンチマークと測定条件](docs/SYCL_WINDOWS.md#benchmark)）。
 
 ## インストール
 
@@ -78,7 +80,7 @@ NVIDIA：Q2_0 はエンジン 0.1.36、ほかの行は 0.1.26 で測定（回答
 AI コーディングアシスタント（Claude Code、Cursor、Codex、GitHub Copilot など）を使っていますか？ これを貼り付けてください：
 
 ```text
-Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
+Set up Strata on this PC for me: https://github.com/NeneNyann/Strata-intel-sycl-windows - follow docs/AI_SETUP.md in that repository.
 ```
 
 AI がグラフィックカード、RAM、ディスクを調べて、合うモデルを選びます。それからインストールして起動し、
@@ -87,10 +89,10 @@ Strata のインストール、起動、停止もできます。
 
 ### 自分でやる
 
-[Strata をダウンロード](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip)して展開します（または `git clone` します）。
+[Strata をダウンロード](https://github.com/NeneNyann/Strata-intel-sycl-windows/archive/refs/heads/main.zip)して展開します（または `git clone` します）。
 **Windows：** **`START-HERE.bat`** をダブルクリック。**Linux：** Strata フォルダーで **`./setup.sh`** を実行します。
 
-手順は NVIDIA でも AMD でも同じです。インストーラーがカードを見つけて、それに合うエンジンを用意します。
+NVIDIA、AMD、Windows の実験的な Intel Arc サポートでインストール手順は同じです。インストーラーがカードを見つけて、それに合うエンジンを用意します。
 いくつか質問があります：
 
 - どのモデルを、どのサイズで使うか

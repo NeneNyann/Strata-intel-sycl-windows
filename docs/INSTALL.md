@@ -1,8 +1,8 @@
 # Installing Strata
 
 Everything about installing, starting, updating and configuring Strata, on Windows and Linux, with an NVIDIA or an
-AMD graphics card. The short version is in the [README](../README.md#install); an AI coding assistant can do all of
-this for you with [AI_SETUP.md](AI_SETUP.md).
+AMD graphics card, plus experimental Intel Arc support. The short version is in the [README](../README.md#install);
+an AI coding assistant can do all of this for you with [AI_SETUP.md](AI_SETUP.md).
 
 > **On this page:** [What you need](#what-you-need) · [Windows](#windows) · [Linux](#linux) ·
 > [AMD cards](#amd-cards) · [Several cards](#two-or-three-cards) · [Docker](#docker-linux) ·
@@ -45,6 +45,9 @@ where it left off) and **starts the model**. Your browser opens the Strata app a
 downloaded twice. Close its window to stop the model. `SETUP.bat` (the same as `START-HERE.bat --setup`) installs
 another model or changes the settings. Starting Strata from Task Scheduler at logon needs two task settings, or the
 start is 24x slower: [Running it at startup](DETAILS.md#running-it-at-startup-task-scheduler).
+
+**Intel Arc on Windows:** use `START-HERE.bat --backend sycl`.
+See [Windows Intel setup](SYCL_WINDOWS.md) for requirements, images and source builds.
 
 ## Linux
 

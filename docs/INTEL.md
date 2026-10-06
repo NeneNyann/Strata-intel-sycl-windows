@@ -5,9 +5,10 @@ section "The engine itself on Intel" below), behind the same Strata server: Open
 tool calls, MCP and the web app all unchanged. llama.cpp's SYCL backend is the comparison point in the tables (it
 runs the same GGUF at about a third of the speed).
 
-Everything Intel-specific lives in `sycl/`; no shared file of upstream's is changed, so upstream merges stay clean.
+The Intel engine lives in `sycl/`.
 `sycl/setup_intel.py` and `sycl/serve/server_intel.py` wrap upstream's `setup.py` and `serve/server.py` from
 outside.
+Windows installation: [SYCL_WINDOWS.md](SYCL_WINDOWS.md).
 
 Written for and measured on an **Arc Pro B70 (32 GB)** running the Coder (IQ1_M) on Ubuntu 24.04, in a
 PCIe 3.0 x8 slot (the card trains at Gen3 x8 there; it can do Gen5 x16).
@@ -31,14 +32,14 @@ on the text"). The SYCL numbers are greedy runs of the engine (as in "How to run
 tokens) on engine 0.1.31-sycl (2026-10-01; 0.1.32-0.1.38-sycl reproduce them exactly);
 "Decode round 2" below lists what each change bought.
 
-## Setup
+## Setup on Linux
 
 Build the engine and its runtime image first ("How to build it" below), then:
 
     python3 sycl/setup_intel.py [setup.py's options, e.g. --model IQ2_XS --context 32768 --port 8085]
 
-This is upstream's `setup.py`, run with the Intel steps swapped in (it imports setup.py and replaces those steps;
-setup.py itself is unchanged). The model choice, download, pack, tokenizer, MTP draft layer and the context and KV
+This runs `setup.py` with the Linux Intel steps swapped in by the wrapper. The model choice, download,
+pack, tokenizer, MTP draft layer and the context and KV
 questions are setup's own. What changes:
 
 - **GPU check:** the Arc is found in sysfs (vendor 8086 under `xe` or `i915`) and offered through setup's AMD
@@ -624,10 +625,15 @@ test an SM-holding NVIDIA bench (not built). Outputs identical to 0.1.33 (Coder 
 - AOT device code is what runs: `AOT=bmg-g31 BUILD_DIR=.../build-sycl-aot` (the JIT build costs ~47 s of
   compiling on the first window).
 
+## Vision
+
+Images are supported on native Windows. Enable them with `--vision gpu` during setup:
+[Windows vision setup](SYCL_WINDOWS.md#vision).
+
 ## Not done
 
-- Images, on both Intel engines. Strata's vision path encodes with `strata-vision` into embeddings the CUDA
-  engine reads; neither the SYCL port nor the llama.cpp config wires it yet.
+- Wire images into the llama.cpp inference path.
+- Validate vision on the Linux SYCL build.
 - Speculative decoding on the llama.cpp path (the GGUF carries no draft layer llama.cpp can use). The SYCL
   port has it (MTP draft layer, `--mtp`).
 
