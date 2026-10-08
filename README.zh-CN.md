@@ -31,16 +31,22 @@ MCP 连接配置见 [MCP 工具说明](docs/DETAILS.md#tools-from-mcp-servers)�
 
 ## 性能
 
-2026-10-07 实测：Arc B580 12 GB、Core i7-14700K、64 GB RAM，Qwen3.8-Flash-Next GSQ-RCO IQ2_XS，INT8 KV、resident experts、MTP spec 4。
+2026-10-09 实测：Arc B580 12 GB、Core i7-14700K、64 GB RAM，Qwen3.8-Flash-Next GSQ-RCO IQ2_XS，
+INT8 KV、MTP spec 4。完整 RAM 专家驻留、固定专家缓存预算与 prefill chunk、全核，无 RAM 预算上限。
+Benchy v1：2,185 输入、256 输出，greedy。
 
-| 测试 | 上下文容量 | 平均 Decode |
-|---|---:|---:|
-| Benchy v1：2,185 输入、256 输出，greedy | 8K | **31.46 tok/s** |
-| 相同提示词，GPU 图像编码器驻留 | 128K | **31.19 tok/s** |
-| 重复请求，复用 2,182 个提示词 token | 128K | **33.67 tok/s** |
-| 工具提示词：1,233 输入，temperature 0.6 | 128K | **24.30–25.34 tok/s** |
+| 场景 | 上下文容量 | 首次 Decode | 重复 Decode |
+|---|---:|---:|---:|
+| 纯文本 | 8K | **42.57 tok/s** | **43.61–45.16 tok/s** |
+| GPU 图像编码器驻留 | 8K | **39.46 tok/s** | **42.06–42.92 tok/s** |
+| 纯文本 | 128K | **46.65 tok/s** | **46.92–48.22 tok/s** |
+| GPU 图像编码器驻留 | 128K | **44.31 tok/s** | **46.53–47.00 tok/s** |
 
-速度随提示词、MTP 接受率和可用显存变化。128K 表示配置容量；上述测试没有使用完整 128K 长度的提示词。更多条件与结果见 [Windows SYCL benchmark](docs/SYCL_WINDOWS.md#benchmark)。
+128K 表示配置容量，上述测试使用短提示词；重复请求复用 2,182 个输入 token。
+WebUI 写作实测：128K 上下文容量，关闭 MCP tools 和 vision，28-token 提示词生成
+5,871 token，平均 decode **36.2 tok/s**。
+
+完整参数、实际专家 RAM/VRAM、prefill 分配及工具提示词结果见 [Windows SYCL benchmark](docs/SYCL_WINDOWS.md#benchmark)。
 
 ## 构建 release
 

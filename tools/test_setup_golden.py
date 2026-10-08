@@ -98,6 +98,7 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
             mock.patch.object(setup, "load_settings", lambda: {}),
             mock.patch.object(setup, "save_settings", lambda s: None),
             mock.patch.object(setup, "gpus", lambda: found),
+            mock.patch.object(setup, "auto_sycl_windows", lambda: False),
             mock.patch.object(setup, "amd_gpus", lambda: []),
             mock.patch.object(setup, "ram_gb", lambda: ram),
             mock.patch.object(setup, "cpu_info", lambda: ("Test CPU", True, avx512)),

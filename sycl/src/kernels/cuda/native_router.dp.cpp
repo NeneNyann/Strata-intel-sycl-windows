@@ -82,7 +82,9 @@ __dpct_inline__ void route(const float *__restrict__ logits,
     float values[NE / 32];
 #pragma unroll
     for (int i = 0; i < NE / 32; ++i) values[i] = logits[lane + i * 32];
-    item_ct1.barrier(sycl::access::fence_space::local_space);
+    // Only subgroup row zero reaches this point (the other rows returned above): a work-group barrier here is
+    // divergent and hangs on Alchemist (A770); the subgroup barrier is the one the surviving row can meet.
+    sycl::group_barrier(item_ct1.get_sub_group());
     float maximum = -INFINITY;
 #pragma unroll
     for (int i = 0; i < NE / 32; ++i) maximum = sycl::max(maximum, values[i]);
@@ -194,21 +196,13 @@ void native_router_top10_multi(const float* logits, int32_t* ids, float* weights
     if (!stream || n_tok < 1 || !valid(logits, (size_t) n_tok * 512 * 4) || !valid(ids, (size_t) n_tok * 10 * 4) ||
         !valid(weights, (size_t) n_tok * 10 * 4))
         throw std::invalid_argument("native router (multi) requires a stream and aligned [n,512]/[n,10] buffers");
-    {
-        auto exp_props = sycl::ext::oneapi::experimental::properties{
-            sycl::ext::oneapi::experimental::use_root_sync};
-
-        ((sycl::queue *)(strata::q_of(stream)))
-            ->parallel_for<dpct_kernel_name<class route_64c24f>>(
-                sycl::nd_range<3>(sycl::range(1, 1, (unsigned)n_tok) *
-                                      sycl::range(1, 8, 32),
-                                  sycl::range(1, 8, 32)),
-                exp_props,
-                [=](sycl::nd_item<3> item_ct1)
-                    [[sycl::reqd_sub_group_size(32)]] {
-                        route<512>(logits, ids, weights);
-                    });
-    }
+    // SYCL port: one block per token running the single-token route<512> (the same kernel as the 256-expert multi
+    // launch below).  Upstream's one-warp-per-token route_multi gives the same bits (native_multi_parity checks
+    // that) but hung an Arc A750 (Alchemist) on its first launch.
+    ((sycl::queue *)(strata::q_of(stream)))
+        ->parallel_for<dpct_kernel_name<class route_512_multi>>(
+            sycl::nd_range<3>(sycl::range(1, 1, (unsigned) n_tok) * sycl::range(1, 8, 32), sycl::range(1, 8, 32)),
+            [=](sycl::nd_item<3> item_ct1) [[sycl::reqd_sub_group_size(32)]] { route<512>(logits, ids, weights); });
     /*
     DPCT1010: SYCL uses exceptions to report errors and does not use the
     error codes. The cudaGetLastError function call was replaced with 0. You

@@ -1,6 +1,7 @@
 // src/core/mtp.cpp - see include/strata/core/mtp.hpp.
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_queue.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/on_device.hpp"
@@ -64,9 +65,9 @@ bool mapped(size_t bytes, void **h, void **d) try {
     migrated code and was removed or replaced with 0. You may need to check the
     migrated code.
     */
-    if (DPCT_CHECK_ERROR(*h = (void *)sycl::malloc_host(
+    if (DPCT_CHECK_ERROR(*h = strata::host_malloc_polled(
                              bytes, dpct::get_in_order_queue())) !=
-        0) return false;
+        0 || *h == nullptr) return false;   // the host polls what the draft steps write: uncached host memory (sycl_queue.hpp)
     std::memset(*h, 0, bytes);
     return DPCT_CHECK_ERROR(*d = (void *)*h) == 0;
 }
@@ -185,7 +186,7 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
         std::vector<uint8_t> blob;
         if (!read_file(rt_dir + "/dense.bin", blob)) { err = "mtp: cannot read dense.bin"; return false; }
         const dpct::err0 alloc =
-            DPCT_CHECK_ERROR(dense_ = (uint8_t *)sycl::malloc_device(
+            DPCT_CHECK_ERROR(dense_ = (uint8_t *)strata::malloc_device_guarded(
                                  blob.size(), dpct::get_in_order_queue()));
         /*
         DPCT1000: Error handling if-stmt was detected but could not be
@@ -237,7 +238,7 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
             FILE* f;
             ~Closer() { if (f != nullptr) std::fclose(f); }
         } closer{f};
-        if (DPCT_CHECK_ERROR(experts_ = (uint8_t *)sycl::malloc_device(
+        if (DPCT_CHECK_ERROR(experts_ = (uint8_t *)strata::malloc_device_guarded(
                                  bytes, dpct::get_in_order_queue())) != 0) {
             err = "mtp: the 512 experts do not fit in VRAM"; return false;
         }
@@ -271,7 +272,7 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
     qsa_set_kv_hybrid(false);
     if (kv_hybrid_was) qsa_set_kv_int8(true);   // the drafter under --kv k8v4: plain INT8
     uint64_t sb = qsa_state_bytes(g, max_cells, false, ring);
-    if (DPCT_CHECK_ERROR(state_arena_ = (void *)sycl::malloc_device(
+    if (DPCT_CHECK_ERROR(state_arena_ = (void *)strata::malloc_device_guarded(
                              sb, dpct::get_in_order_queue())) != 0) {
         err = "mtp: the K/V state does not fit"; return false;
     }
@@ -286,7 +287,7 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
         st_ = QsaState{};
         ring = -1;   // fully resident
         sb = qsa_state_bytes(g, max_cells, false, ring);
-        if (DPCT_CHECK_ERROR(state_arena_ = (void *)sycl::malloc_device(
+        if (DPCT_CHECK_ERROR(state_arena_ = (void *)strata::malloc_device_guarded(
                                  sb, dpct::get_in_order_queue())) != 0) {
             err = "mtp: the K/V state does not fit"; return false;
         }
@@ -342,11 +343,11 @@ bool MtpDrafter::load(const std::string &rt_dir, const ModelGeometry &g,
     };
     Bump count;
     carve(count);
-    if (DPCT_CHECK_ERROR(arena_ = (void *)sycl::malloc_device(
+    if (DPCT_CHECK_ERROR(arena_ = (void *)strata::malloc_device_guarded(
                              count.used, dpct::get_in_order_queue())) != 0) {
         err = "mtp: buffers do not fit"; return false;
     }
-    dpct::get_in_order_queue().memset(arena_, 0, count.used).wait();
+    strata::big_fill_zero(dpct::get_in_order_queue(), arena_, count.used);
     Bump real;
     real.base = (uint8_t*) arena_;
     carve(real);
@@ -528,7 +529,8 @@ bool MtpDrafter::bind(const WeightTable &wt, const NativeHead *head,
                     0 ||
                 DPCT_CHECK_ERROR(dhead_ = (uint8_t *)sycl::malloc_device(
                                      (size_t)(n_dvocab_ * row_bytes),
-                                     dpct::get_in_order_queue())) != 0) {
+                                     dpct::get_in_order_queue())) != 0 ||
+                dvocab_ == nullptr || dhead_ == nullptr) {   // Level Zero returns null when the VRAM is full
                 err = "mtp: the draft head does not fit";
                 draft_head_hint(n_dvocab_, row_bytes);
                 return false;
@@ -676,7 +678,7 @@ bool MtpDrafter::record_forward(int T, int step_row0, dpct::queue_ptr cs,
         // ---- MoE: router, the 512 resident experts, the shared expert, the combine, the write
         for (int t = 0; t < T; ++t) {
             bf16_gemv_fp32_mmvf(mixed_ + t * N, bf16("mlp.gate.weight"), logits_ + t * g.n_expert, (int) N, (int) g.n_expert, cs);
-            if (native_router_enabled()) native_router_top10(logits_ + t * g.n_expert, ids_ + t * K, w_ + t * K, cs);
+            if (native_router_enabled() && g.n_expert == 512 && K == 10) native_router_top10(logits_ + t * g.n_expert, ids_ + t * K, w_ + t * K, cs);
             else router_top10(logits_ + t * g.n_expert, 1, (int) g.n_expert, (int) K, ids_ + t * K, w_ + t * K, cs);
         }
         moe_group_resident(ids_, (int) (T * K), (int) K, experts_, (int64_t) strata::kernels::cpu::BLOB, grp_ptr_,

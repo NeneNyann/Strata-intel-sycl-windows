@@ -38,19 +38,23 @@ See [MCP tools](docs/DETAILS.md#tools-from-mcp-servers) for MCP configuration an
 
 ## Performance
 
-Measured on 2026-10-07: Arc B580 12 GB, Core i7-14700K, 64 GB RAM, Qwen3.8-Flash-Next GSQ-RCO IQ2_XS,
-INT8 KV, resident experts and MTP spec 4.
+Measured on 2026-10-09: Arc B580 12 GB, Core i7-14700K, 64 GB RAM, Qwen3.8-Flash-Next GSQ-RCO IQ2_XS,
+INT8 KV and MTP spec 4. Full RAM expert residency, fixed expert-cache budgets and prefill chunks, all CPU cores;
+no RAM budget limit. Benchy v1: 2,185 input tokens, 256 output tokens, greedy.
 
-| Test | Context capacity | Average decode |
-|---|---:|---:|
-| Benchy v1: 2,185 input tokens, 256 output tokens, greedy | 8K | **31.46 tok/s** |
-| Same prompt, GPU image encoder loaded | 128K | **31.19 tok/s** |
-| Repeated request, 2,182 prompt tokens reused | 128K | **33.67 tok/s** |
-| Tool prompt: 1,233 input tokens, temperature 0.6 | 128K | **24.30–25.34 tok/s** |
+| Case | Context capacity | First decode | Repeated decode |
+|---|---:|---:|---:|
+| Text only | 8K | **42.57 tok/s** | **43.61–45.16 tok/s** |
+| GPU vision loaded | 8K | **39.46 tok/s** | **42.06–42.92 tok/s** |
+| Text only | 128K | **46.65 tok/s** | **46.92–48.22 tok/s** |
+| GPU vision loaded | 128K | **44.31 tok/s** | **46.53–47.00 tok/s** |
 
-Speed varies with the prompt, MTP acceptance and available VRAM. 128K is the configured capacity;
-these tests did not use full 128K-length prompts. See [Windows SYCL benchmarks](docs/SYCL_WINDOWS.md#benchmark)
-for conditions and results.
+128K is the configured capacity; these tests used short prompts. Repeats reused 2,182 input tokens.
+In a WebUI writing session with 128K context capacity, MCP tools and vision off, a 28-token prompt
+generated 5,871 tokens at **36.2 tok/s**.
+
+See [Windows SYCL benchmarks](docs/SYCL_WINDOWS.md#benchmark) for full parameters, actual expert RAM/VRAM,
+prefill allocation and tool-prompt results.
 
 ## Build a release
 

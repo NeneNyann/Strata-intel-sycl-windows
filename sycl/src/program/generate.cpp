@@ -24,6 +24,9 @@
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#ifdef _WIN32
+#undef small
+#endif
 #include "strata/sycl_queue.hpp"
 #include "strata/core/device.hpp"
 #include "strata/core/expert_cache.hpp"
@@ -731,7 +734,8 @@ void usage() {
                  "                       position take all of them.  The default policy fills in arrival order\n"
                  "                       from one shared counter, so 256 slots went to ~26 layers of position 0\n"
                  "                       and measured **2.97%%**.  Per-layer, the same routing gives 21.4%% at 8\n"
-                 "                       slots/layer and 70.4%% at 64.\n"
+                 "                       slots/layer and 70.4%% at 64.  On a native pack, N is still the budget of N\n"
+                 "                       largest blobs; each layer's slots are that layer's own blob.\n"
                  "  --no-host-worker     R2.2: the A/B arm.  By default the HOST THREAD joins the drain, so the\n"
                  "                       pool is six threads on six cores instead of five plus an idle core;\n"
                  "                       this flag restores the five-worker form for comparison on `pool phases`.\n"
@@ -2108,6 +2112,7 @@ int main(int argc, char **argv) try {
     // link (the copy kernel, since 0.1.14), so on a slower link it must shrink or the window waits for it.  The
     // real H2D bandwidth is probed once; from 20 GB/s up (x16 PCIe 4/5) the measured default stays.  The canonical
     // pack's 0.2 was never measured against the link, so it is left alone.  `--calibrate` measures it outright.
+    const bool pcie_explicit = o.pcie_frac >= 0.0;
     if (o.pcie_frac < 0.0) {
         const double base = native_pack ? 0.55 : 0.2;
         std::string bursts;
@@ -2121,6 +2126,24 @@ int main(int argc, char **argv) try {
         } else {
             o.pcie_frac = base;
             std::fprintf(stderr, "strata generate: PCIe probe failed -> pcie_frac default %.2f\n", base);
+        }
+    }
+    // SYCL port, Arc on the xe driver (Arc Pro B60/B65/B70, B580): the GPU page-faults when a kernel reads ordinary
+    // (pageable) host memory, and the card times the job out (seen on a B70: Timedout job, Fault response -EINVAL,
+    // faulted address in the CPU's mmap range). Without --stream-experts the experts outside the VRAM cache stay in a
+    // pageable arena that the PCIe share (--pcie-frac) hands to the GPU. Recommend, never force: the default share
+    // becomes 0 (the CPU computes those misses) and an explicit --pcie-frac is kept with a warning.
+    if (strata::intel_gpu_driver() == "xe" && !o.stream_experts) {
+        if (!pcie_explicit) {
+            o.pcie_frac = 0.0;
+            std::fprintf(stderr, "strata generate: xe driver without --stream-experts: the GPU faults on pageable host "
+                                 "memory, so --pcie-frac defaults to 0 here (the CPU computes the experts outside VRAM). "
+                                 "Use --stream-experts, as setup configures it, to let the GPU read a pinned mirror\n");
+        } else if (o.pcie_frac > 0.0) {
+            std::fprintf(stderr, "strata generate: WARNING: --pcie-frac %.2f on the xe driver without --stream-experts "
+                                 "makes the GPU read pageable host memory; that page-faulted and hung an Arc Pro B70 "
+                                 "(Timedout job, device lost). Use --stream-experts, as setup configures it, or "
+                                 "--pcie-frac 0\n", o.pcie_frac);
         }
     }
     // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
@@ -2314,7 +2337,7 @@ int main(int argc, char **argv) try {
     rewritten.
     */
     if (const dpct::err0 ce =
-            DPCT_CHECK_ERROR(arena = (void *)sycl::malloc_device(
+            DPCT_CHECK_ERROR(arena = (void *)strata::malloc_device_guarded(
                                  pool_bytes, dpct::get_in_order_queue()));
         ce != 0) {
         // #486: the arena is the first large allocation and its size does not depend on the context, so what is
@@ -2725,7 +2748,7 @@ int main(int argc, char **argv) try {
             skip_s = skip;
         }
         void* arena_s = nullptr;
-        if (DPCT_CHECK_ERROR(arena_s = (void *)sycl::malloc_device(
+        if (DPCT_CHECK_ERROR(arena_s = (void *)strata::malloc_device_guarded(
                                  pool_s, dpct::get_in_order_queue())) != 0 ||
             !st.wt.load(o.pack, arena_s, pool_s, err,
                         skip_s.empty() ? nullptr : &skip_s)) {
@@ -3257,6 +3280,9 @@ int main(int argc, char **argv) try {
             strata::emulated_cc()
                 ? " (STRATA_EMULATE_CC: a test mode, the card is emulated)"
                 : "");
+#if 0 // the SYCL port has no CUDA runtime to mismatch (#542): dpct::get_major_version is the device version
+#if !defined(STRATA_HIP_GFX906) // a CUDA toolkit mismatch; the gfx906 HIP build
+                                // has no DPCT_COMPAT_RT_VERSION
         {   // #542: a build whose libcudart is older than its headers (a CUDA 13 kit with a dangling libcudart.so that
             // CMake resolved to the system's CUDA 12 one) reads cudaDeviceProp shifted - silently, and slowly
             int rt = 0;
@@ -3280,6 +3306,8 @@ int main(int argc, char **argv) try {
                     DPCT_COMPAT_RT_VERSION % 1000 / 10, rt / 1000,
                     rt % 1000 / 10);
         }
+#endif
+#endif // #if 0
 #endif
         const std::string e = strata::core::device_code_error();
         if (!e.empty()) {
@@ -3498,12 +3526,46 @@ int main(int argc, char **argv) try {
             o.expert_cache = (int) fit;
         }
     }
-    // plan v0.3 P6: a native pack's blobs differ per layer, so with a profile its slots are sized per pair: the
-    // same VRAM holds ~30% more IQ3_XXS experts than slots of the largest blob would
-    // #369: not with --expert-cache-per-layer - its per-layer slot ranges ignore the profile rank a sized slot was cut
-    // for, so a layer's larger blob could land in a smaller slot: that mode keeps slots of the largest blob
+    // plan v0.3 P6: a native pack's blobs differ per layer, so the same VRAM holds more experts than slots of
+    // the largest blob would. The shared cache below sizes slots in profile order.
+    // #369: that list does not match --expert-cache-per-layer. A range is layer * quota + n, so a size cut for
+    // one layer can land in another layer's slot. Every expert in a layer is one size, so the per-layer list is
+    // `quota` copies of that layer's own blob, in layer order. `--expert-cache N` stays the budget of N largest
+    // blobs, and the quota is however many copies of every layer fit in it.
     std::vector<int64_t> sized_slots;
-    if (native_pack && o.expert_cache > 0 && !profile.empty() && !o.expert_cache_per_layer) {
+    uint64_t per_layer_bytes = 0;
+    if (native_pack && o.expert_cache > 0 && o.expert_cache_per_layer) {
+        size_t free_b = 0, total_b = 0;
+        /*
+        DPCT1106: 'cudaMemGetInfo' was migrated with the Intel extensions
+        for device information which may not be supported by all compilers or
+        runtimes. You may need to adjust the code.
+        */
+        dpct::get_current_device().get_memory_info(free_b, total_b);
+        const auto& lay = strata::kernels::cpu::expert_layout();
+        const int asked = o.expert_cache;
+        const uint64_t budget = (uint64_t) asked * lay.max_blob;
+        size_t free_room = free_b > ((size_t) o.vram_reserve_mib << 20) ? free_b - ((size_t) o.vram_reserve_mib << 20) : 0;
+        const uint64_t cap = std::min<uint64_t>(budget, (uint64_t) free_room);
+        uint64_t sum = 0;
+        for (int64_t l = 0; l < g.n_layers; ++l)
+            sum += (lay.blob_bytes(l) + 255) / 256 * 256;
+        int64_t q = sum > 0 ? (int64_t) (cap / sum) : 0;
+        if (q > g.n_expert) q = g.n_expert;
+        if (q > 0) {
+            per_layer_bytes = sum;
+            sized_slots.reserve((size_t) q * (size_t) g.n_layers);
+            for (int64_t l = 0; l < g.n_layers; ++l) {
+                const int64_t b = (int64_t) lay.blob_bytes(l);
+                for (int64_t s = 0; s < q; ++s) sized_slots.push_back(b);
+            }
+            o.expert_cache = (int) sized_slots.size();
+            std::fprintf(stderr, "strata generate: per-layer slots use each layer's blob: %d uniform slots "
+                                 "(%.2f GiB) -> %d slots, %lld per layer (%.2f GiB)\n",
+                         asked, (double) budget / 1073741824.0, o.expert_cache, (long long) q,
+                         (double) ((uint64_t) q * per_layer_bytes) / 1073741824.0);
+        }
+    } else if (native_pack && o.expert_cache > 0 && !profile.empty()) {
         size_t free_b = 0, total_b = 0;
         /*
         DPCT1106: 'cudaMemGetInfo' was migrated with the Intel extensions
@@ -3546,6 +3608,20 @@ int main(int argc, char **argv) try {
         // keep the first `keep_bytes` of the cache (the profile's hottest experts first); false when nothing is left
         auto shrink_to = [&](int64_t keep_bytes) -> bool {
             if (keep_bytes <= 0) { o.expert_cache = 0; sized_slots.clear(); return false; }
+            if (per_layer_bytes > 0) {
+                // Cutting the list short would put one layer's blob in the next layer's range.
+                const auto& lay = strata::kernels::cpu::expert_layout();
+                int64_t q = keep_bytes / (int64_t) per_layer_bytes;
+                if (q > g.n_expert) q = g.n_expert;
+                sized_slots.clear();
+                if (q <= 0) { o.expert_cache = 0; return false; }
+                for (int64_t l = 0; l < g.n_layers; ++l) {
+                    const int64_t b = (int64_t) lay.blob_bytes(l);
+                    for (int64_t s = 0; s < q; ++s) sized_slots.push_back(b);
+                }
+                o.expert_cache = (int) sized_slots.size();
+                return true;
+            }
             if (!sized_slots.empty()) {
                 int64_t used = 0;
                 size_t keep = 0;
@@ -3611,9 +3687,7 @@ int main(int argc, char **argv) try {
                 return 1;
             }
             if (!auto_cache || attempt - failed >= 6) break;
-            dpct::get_in_order_queue()
-                .memset(xcache.device_slot(0), 0, (size_t)xcache.bytes())
-                .wait();
+            if (uint8_t* slot0 = xcache.device_slot(0)) strata::big_fill_zero(dpct::get_in_order_queue(), slot0, (size_t)xcache.bytes());
             dpct::get_current_device().queues_wait_and_throw();
             size_t free_b = 0, total_b = 0;
             /*
@@ -3671,6 +3745,7 @@ int main(int argc, char **argv) try {
     // admission finds no room and every non-profiled expert stays a CPU miss.  That is what makes the profile
     // the policy rather than a hint.
     int64_t prefilled = 0;
+    std::function<void(const char*)> verify_all_slots;   // STRATA_VERIFY_ALL_SLOTS (debug), set by the pipelined fill
     if (!profile.empty() && srcp != nullptr) {
         // #369 (dag08): per layer, a full layer skips only its own pairs - each layer takes its hottest experts until
         // its range is full (one full layer used to end the whole fill, leaving most layers empty)
@@ -3740,6 +3815,51 @@ int main(int argc, char **argv) try {
                 return 1;
             }
             prefilled = (int64_t) fills.size();
+            if (std::getenv("STRATA_VERIFY_ALL_SLOTS") != nullptr) {   // debug: every filled slot read back and compared with the GGUF
+                auto fl = std::make_shared<std::vector<Fill>>(fills);
+                verify_all_slots = [&, fl, blob_cap](const char* when) {
+                    sycl::queue& vq = dpct::get_in_order_queue();
+                    vq.wait();
+                    std::vector<uint8_t> want_b(blob_cap), got_b(blob_cap);
+                    int64_t bad = 0, first_bad = -1;
+                    for (size_t i = 0; i < fl->size(); ++i) {
+                        const Fill& f = (*fl)[i];
+                        const size_t nb = (size_t) lay.blob_bytes(f.l);
+                        if (!gguf_src.read_into(f.l, f.e, want_b.data(), blob_cap)) { ++bad; continue; }
+                        vq.memcpy(got_b.data(), xcache.device_slot(f.slot), nb).wait();
+                        if (std::memcmp(want_b.data(), got_b.data(), nb) != 0) {
+                            if (first_bad < 0) first_bad = (int64_t) i;
+                            ++bad;
+                            size_t nd = 0, fd = nb, ld = 0;
+                            for (size_t x = 0; x < nb; ++x)
+                                if (want_b[x] != got_b[x]) { ++nd; if (fd == nb) fd = x; ld = x; }
+                            if (std::getenv("STRATA_VERIFY_FIND") != nullptr && bad <= 2 && fd + 4160 < nb) {   // whose blob is the wrong data?
+                                const uint8_t* probe = got_b.data() + fd + 4096;
+                                std::vector<uint8_t> other(blob_cap);
+                                for (size_t j = 0; j < fl->size(); ++j) {
+                                    const Fill& g2 = (*fl)[j];
+                                    if (!gguf_src.read_into(g2.l, g2.e, other.data(), blob_cap)) continue;
+                                    const size_t nb2 = (size_t) lay.blob_bytes(g2.l);
+                                    const uint8_t* hit = std::search(other.data(), other.data() + nb2, probe, probe + 64);
+                                    if (hit != other.data() + nb2)
+                                        std::fprintf(stderr, "    the wrong data at byte %zu is expert (layer %d, expert %d), slot %d (fill %zu), byte %zu of its blob\n",
+                                                     fd + 4096, (int) g2.l, (int) g2.e, (int) g2.slot, j, (size_t) ((const uint8_t*) hit - other.data()));
+                                }
+                            }
+                            if (const char* dd = std::getenv("STRATA_VERIFY_DUMP"); dd != nullptr && bad == 1) {
+                                const std::string base = std::string(dd) + "/slot" + std::to_string(f.slot);
+                                if (FILE* fo = std::fopen((base + ".got").c_str(), "wb")) { std::fwrite(got_b.data(), 1, nb, fo); std::fclose(fo); }
+                                if (FILE* fo = std::fopen((base + ".want").c_str(), "wb")) { std::fwrite(want_b.data(), 1, nb, fo); std::fclose(fo); }
+                            }
+                            std::fprintf(stderr, "strata generate: STRATA_VERIFY_ALL_SLOTS (%s): fill %zu (layer %d expert %d) slot %d at %p: %zu of %zu bytes differ, first at %zu, last at %zu\n",
+                                         when, i, (int) f.l, (int) f.e, (int) f.slot, (const void*) xcache.device_slot(f.slot), nd, nb, fd, ld);
+                        }
+                    }
+                    std::fprintf(stderr, "strata generate: STRATA_VERIFY_ALL_SLOTS (%s): %lld of %zu slots differ from the GGUF (first at fill %lld)\n",
+                                 when, (long long) bad, fl->size(), (long long) first_bad);
+                };
+                verify_all_slots("after the fill");
+            }
         }
         // #286: an unbuffered file tier reads the pairs in batches of 64, the next batch while this one is copied
         std::future<void> ahead;
@@ -3788,10 +3908,15 @@ int main(int argc, char **argv) try {
     unsigned long long* mirror_table_d = nullptr;   // [n_layers][n_expert] device-readable mirror addresses (0 = none)
     int64_t unmirrored_misses = 0;
     if (o.stream_experts && srcp == &gguf_src && o.expert_cache > 0) {
+        // #1054, #1440: with a layer split the mirror holds only the first GPU's layers. The pinned memory belongs to
+        // this GPU's context, and the later stages' caches do not exist yet (every later-stage expert would count as a
+        // miss: 20 GiB of RAM for experts the other card then holds, or one 39 GiB pinned allocation that fails).
+        const int64_t mirror_end = multi_gpu && !split_at.empty() ? split_at[0] : g.n_layers;
         std::vector<std::pair<int64_t, int64_t>> miss;
         for (const auto& pr : profile)   // the profile's order: the most-routed misses first, if the cap is reached
-            if (xcache.slot_of(pr.first, pr.second) == strata::core::kNotResident) miss.push_back({pr.first, pr.second});
-        for (int64_t l = 0; l < g.n_layers; ++l)                     // pairs the profile does not list at all
+            if (pr.first < mirror_end && xcache.slot_of(pr.first, pr.second) == strata::core::kNotResident)
+                miss.push_back({pr.first, pr.second});
+        for (int64_t l = 0; l < mirror_end; ++l)                     // pairs the profile does not list at all
             for (int64_t e = 0; e < g.n_expert; ++e)
                 if (xcache.slot_of(l, e) == strata::core::kNotResident &&
                     std::find(miss.begin(), miss.end(), std::pair<int64_t, int64_t>{l, e}) == miss.end())
@@ -3835,15 +3960,11 @@ int main(int argc, char **argv) try {
         }
         unmirrored_misses = (int64_t) miss.size() - (int64_t) (gguf_src.mirrored_bytes() ? std::count_if(miss.begin(), miss.end(),
             [&](const std::pair<int64_t, int64_t>& pr) { return gguf_src.pinned(pr.first, pr.second); }) : 0);
-        if (std::getenv("STRATA_VERIFY_NO_HOST") != nullptr) {
-            const char* device_plan = std::getenv("STRATA_VERIFY_DEVICE_PLAN");
-            if (unmirrored_misses > 0 || device_plan == nullptr || std::atoi(device_plan) == 0) {
-                std::fprintf(stderr, "strata generate: STRATA_VERIFY_NO_HOST requires STRATA_VERIFY_DEVICE_PLAN=1 and "
-                                     "every expert in VRAM or the host mirror (%lld missing). Unset STRATA_VERIFY_NO_HOST "
-                                     "to use the CPU fallback, or increase STRATA_MIRROR_MIB and available RAM.\n",
-                             (long long) unmirrored_misses);
-                return 2;
-            }
+        if (unmirrored_misses > 0 && [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }()) {
+            std::fprintf(stderr, "strata generate: REFUSED: %lld experts are neither in VRAM nor mirrored; with STRATA_VERIFY_NO_HOST "
+                                 "the device plan cannot run them and generation would lack a safe host fallback - raise "
+                                 "STRATA_MIRROR_MIB or the free RAM, or lower --max-context\n", (long long) unmirrored_misses);
+            return 2;
         }
     }
 
@@ -4236,6 +4357,7 @@ int main(int argc, char **argv) try {
 
     mem_mark("the expert cache and the graphs");
     std::fprintf(stderr, "strata generate: session is up (engine %s)\n", STRATA_VERSION);
+    if (verify_all_slots) verify_all_slots("session up");
     auto run_head = [&](void* stream) -> bool {
         if (!native_head.loaded())
             return strata::core::lm_head(wt, g, ss.block, d_logits, stream, err);
@@ -7373,7 +7495,15 @@ int main(int argc, char **argv) try {
         save_profile("exit");   // #477: QUIT, or the server closed stdin
         // SYCL port: the requests are done and their output written; leave without unwinding the GPU objects (the OS
         // reclaims them). Their destructors ran against a runtime already shutting down and aborted (exit 139).
-        try { dpct::get_current_device().queues_wait_and_throw(); } catch (...) {}
+        try {
+            dpct::get_current_device().queues_wait_and_throw();
+            // Release the direct-access USM host mirror before process teardown.
+            gguf_src.close();
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "strata shutdown: mirror release failed: %s\n", e.what());
+            std::fflush(stderr);
+            std::_Exit(1);
+        }
         std::fflush(stdout);
         std::fflush(stderr);
         std::_Exit(0);
@@ -8065,6 +8195,11 @@ int main(int argc, char **argv) try {
             }
             int a = 0;
             while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+            if (std::getenv("STRATA_DBG_DRAFT") != nullptr) {   // the window the drafter built and what the target said
+                std::fprintf(stderr, "draftdbg: window"); for (int i = 0; i < T; ++i) std::fprintf(stderr, " %d", (int) window[(size_t) i]);
+                std::fprintf(stderr, " | target"); for (int i = 0; i < T; ++i) std::fprintf(stderr, " %d", (int) outv[(size_t) i]);
+                std::fprintf(stderr, " | accepted %d\n", a);
+            }
             if (first_window) {
                 first_window = false;
                 ttft_ms = std::chrono::duration<double, std::milli>(Clock::now() - t_start).count();

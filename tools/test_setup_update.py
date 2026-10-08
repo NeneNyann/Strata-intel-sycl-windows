@@ -99,6 +99,7 @@ class Update(unittest.TestCase):
                     mock.patch.object(setup, "data_folder", return_value=(Path(d), [])), \
                     mock.patch.object(setup, "installed_configs", return_value=[p]), \
                     mock.patch.object(setup, "update_install", return_value=0) as up, \
+                    mock.patch.object(setup, "auto_sycl_windows", return_value=False), \
                     mock.patch.object(setup, "start") as start, \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(setup.main(), 0)

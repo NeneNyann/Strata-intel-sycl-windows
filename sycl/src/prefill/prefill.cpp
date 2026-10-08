@@ -211,7 +211,7 @@ struct Alloc {
             return p;
         }
         void* p = nullptr;
-        if (DPCT_CHECK_ERROR(p = (void *)sycl::malloc_device(
+        if (DPCT_CHECK_ERROR(p = (void *)strata::malloc_device_guarded(
                                  bytes, dpct::get_in_order_queue())) != 0) {
             ok = false; return nullptr;
         }
@@ -550,6 +550,9 @@ struct Prefill::Impl {
     uint16_t* dq_d[DQ] = {};
     uint8_t* stage_dev[RING_MAX] = {};
     int ring = STAGE;                        // the slots of this layout's ring (ring_slots)
+    // this layout's GU, H and Xq are the fused path's (moe_bufs' `fused`), so a layer that runs MMQ or the FP16 path may
+    // only write stream_all_min() - 1 of its rows into them; fused_layout() keeps the two in step (#583, #954)
+    bool fused_bufs = false;
     std::unique_ptr<Stager> stager;          // the unpinned experts' host copies (step 4)
     dpct::event_ptr copied[RING_MAX] = {}, used[RING_MAX] = {};
     bool stage_live[RING_MAX] = {};
@@ -972,6 +975,7 @@ bool Prefill::carve(size_t T, void* alloc) {
     {
         // one region for the attention half's and the MoE half's scratch (see gdn_set_bytes)
         const bool fz = fused_layout(T, m.src != nullptr);
+        m.fused_bufs = fz;
         const MoeBufs mb = moe_bufs(T, m.g->n_expert, fz);
         const uint64_t region = std::max({gdn_set_bytes(T), qsa_set_bytes(T, m.cap, m.max_blocks, m.sel_batch,
                                                                            m.attn_batch, s), moe_set_bytes(T, m.g->n_expert, fz)});
@@ -1312,7 +1316,7 @@ bool Prefill::set_peer(core::PeerExperts *peer, int64_t cap_rows,
         try {
     void *p = nullptr;
         if (!ok ||
-            DPCT_CHECK_ERROR(p = (void *)sycl::malloc_device(
+            DPCT_CHECK_ERROR(p = (void *)strata::malloc_device_guarded(
                                  bytes, dpct::get_in_order_queue())) != 0) {
             ok = false; return nullptr;
         }
@@ -1656,7 +1660,13 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
     // SYCL port: a short first chunk so the GPU starts while the rest of the prompt's PLE rows are still being read
     // (27k random 4 KB reads per 2k tokens, 330 ms at the drive's ~85k IOPS, otherwise all before the first kernel).
     // STRATA_PREFILL_FIRST=<tokens> (0: off), default 256 when the prompt is longer than twice that.
-    static const int64_t first_chunk = [] { const char* v = std::getenv("STRATA_PREFILL_FIRST"); return v ? std::atoll(v) : 256; }();
+    // Every chunk streams the experts the cache does not hold (a 4K prompt touches nearly all 512 per layer), over PCIe: with
+    // part of the model in the host mirror a short first chunk costs a whole extra pass of that stream (an Arc Pro B70 on
+    // IQ3_S: a 4,095-token prompt 784 -> 1,002 tok/s without it).  So the default is 256 only when the cache holds every
+    // expert; STRATA_PREFILL_FIRST=<tokens> decides explicitly.
+    const bool all_cached = m.cache != nullptr && m.g != nullptr && m.cache->slots() >= m.g->n_layers * m.g->n_expert;
+    static const char* const first_env = std::getenv("STRATA_PREFILL_FIRST");
+    const int64_t first_chunk = first_env ? std::atoll(first_env) : (all_cached ? 256 : 0);
     auto chunk_len = [&](int64_t c0) {
         if (c0 == 0 && first_chunk > 0 && first_chunk < m.T && n > 2 * first_chunk) return first_chunk;
         return std::min(m.T, n - c0);
@@ -2557,6 +2567,19 @@ bool Prefill::run(const int64_t *tokens, int64_t n, int64_t pos0,
                     const bool no_peer = !core::peer_portable();
                     const bool fused_nat = use_mmq && stream_all && no_peer && lay.native && fused::native_supported(mmq_gt, mmq_dt);
                     const bool fused_l = (use_mmq && stream_all && no_peer && !lay.native && fused::enabled()) || fused_nat;
+                    // #583 / #954: the fused layout's GU/H/Xq hold the grouping tables and the int8 rows, sized for
+                    // stream_all_min() - 1 tokens of MMQ's rows, so a layer that takes MMQ or the FP16 path at the FULL
+                    // chunk would write T*K rows into a (stream_all_min() - 1)*K-row buffer: an illegal access, or a kernel
+                    // that never returns (the first ck() to see it is `prefill mmq: iota`, one prompt later).  fused_layout()
+                    // and fused_ring() keep the shrink and this decision in step; this is the backstop for anything that
+                    // drifts: a clear error, never a hang.
+                    // STRATA_DBG_FORCE_SLOW_LAYER=1 (a test of the backstop): layer 0 counts as one the fused path does not take
+                    static const bool force_slow = [] { const char* e = std::getenv("STRATA_DBG_FORCE_SLOW_LAYER"); return e && e[0] == '1'; }();
+                    if ((!fused_l || (force_slow && l == 0)) && m.fused_bufs && T >= stream_all_min()) {
+                        err = "prefill: the fused layout's MoE buffers are too small for layer " + std::to_string(l) +
+                              "'s expert path at a chunk of " + std::to_string(T) + " tokens";
+                        return false;
+                    }
                     size_t n_order = 0;                   // the routed experts (the debug report; unknown when fused)
                     bool peer_now = false;                // multi-GPU: the peer computed rows of this layer (MMQ path only)
                     if (fused_l) {

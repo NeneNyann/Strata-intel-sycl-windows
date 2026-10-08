@@ -65,13 +65,11 @@ L'installateur s'occupe de tout le reste. Deux ou trois cartes peuvent se partag
 Expérimental, écrit et testé par des membres de la communauté sur leurs propres machines :
 
 - **Cartes graphiques plus anciennes** (Tesla P40 / V100, GTX 10, Radeon VII / MI50, RX 6700 XT, RX 5500 XT) : [Older GPUs](docs/OLDER_GPUS.md).
-- **Intel Arc (expérimental) :** [installation et paquet Windows](docs/SYCL_WINDOWS.md), [compilation sous Linux](docs/INTEL_ARC.md).
+- **Intel Arc**, compilé depuis les sources sous Linux : [Intel Arc](docs/INTEL_ARC.md).
 - **AMD Ryzen AI Max (Strix Halo)**, compilé depuis les sources sous Linux : [Strix Halo](docs/STRIX_HALO.md).
 - **Processeurs plus anciens sans AVX2** : ça marche, mais lentement. [Older CPUs](docs/INSTALL.md#older-cpus-experimental).
 
 La liste complète : [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
-
-Sous Windows, choisissez Intel avec `START-HERE.bat --backend sycl` ; ajoutez `--setup --vision gpu` pour les images. B580 12 Go avec IQ2_XS + MTP : 31,46 tok/s mesurés ([benchmark et conditions](docs/SYCL_WINDOWS.md#benchmark)).
 
 ## Installation
 
@@ -80,7 +78,7 @@ Sous Windows, choisissez Intel avec `START-HERE.bat --backend sycl` ; ajoutez `-
 Vous utilisez un assistant de code IA (Claude Code, Cursor, Codex, GitHub Copilot, ...) ? Collez-lui ceci :
 
 ```text
-Set up Strata on this PC for me: https://github.com/NeneNyann/Strata-intel-sycl-windows - follow docs/AI_SETUP.md in that repository.
+Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
 ```
 
 Il vérifie votre carte graphique, votre RAM et votre disque, et choisit le modèle qui convient. Ensuite il l'installe,
@@ -89,10 +87,10 @@ arrêter Strata grâce à son [serveur MCP](docs/MCP_SERVER.md).
 
 ### Ou faites-le vous-même
 
-[Téléchargez Strata](https://github.com/NeneNyann/Strata-intel-sycl-windows/archive/refs/heads/main.zip) et décompressez-le (ou faites un `git clone`).
+[Téléchargez Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) et décompressez-le (ou faites un `git clone`).
 **Windows :** double-cliquez sur **`START-HERE.bat`**. **Linux :** lancez **`./setup.sh`** dans le dossier Strata.
 
-Les étapes sont les mêmes pour NVIDIA, AMD et Intel Arc expérimental sous Windows. L'installateur détecte votre carte et installe le bon moteur pour elle.
+Les étapes sont les mêmes pour NVIDIA et AMD. L'installateur détecte votre carte et installe le bon moteur pour elle.
 Il vous pose quelques questions :
 
 - quel modèle et quelle taille,

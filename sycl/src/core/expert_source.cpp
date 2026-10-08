@@ -614,6 +614,77 @@ void FileExpertSource::close() {
 }
 
 
+void FileExpertSource::StageBufFree::operator()(uint8_t* p) const noexcept {
+    if (pinned) {
+        try { sycl::free(p, dpct::get_in_order_queue()); } catch (const sycl::exception&) {}
+    } else delete[] p;
+}
+
+bool ExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) {
+    for (size_t i = 0; i < n; ++i)
+        if (!copy_blob(layers[i], experts[i], dst[i])) return false;
+    return true;
+}
+
+double FileExpertSource::cached_share(int64_t samples) const {
+#if defined(__linux__)
+    if (role_ptr_.empty() || samples <= 0 || n_layers_ <= 0 || n_expert_ <= 0) return -1.0;
+    // an even spread over the (layer, expert) grid, every page of each of the expert's three slices through mincore
+    const int64_t total = (int64_t) n_layers_ * (int64_t) n_expert_;
+    const int64_t n = std::min<int64_t>(samples, total);
+    uint64_t pages = 0, resident = 0;
+    std::vector<unsigned char> vec;
+    for (int64_t s = 0; s < n; ++s) {
+        const int64_t idx = std::min<int64_t>(total - 1, (s * total) / n + (s * 7919) % std::max<int64_t>(1, total / n));
+        const int64_t layer = idx / n_expert_, expert = idx % n_expert_;
+        if (!transient(layer, expert)) continue;
+        for (int r = 0; r < 3; ++r) {
+            const size_t i = (size_t) (3 * layer + r);
+            if (role_ptr_[i] == nullptr || role_bytes_[i] == 0) continue;
+            const uint8_t* p = role_ptr_[i] + (size_t) ((uint64_t) expert * role_bytes_[i]);
+            const uintptr_t pg = 4096, a = (uintptr_t) p & ~(pg - 1);
+            const size_t len = (size_t) ((uintptr_t) p + role_bytes_[i] - a), np = (len + pg - 1) / pg;
+            vec.assign(np, 0);
+            if (mincore((void*) a, len, vec.data()) != 0) return -1.0;
+            pages += np;
+            for (unsigned char v : vec) resident += v & 1;
+        }
+    }
+    return pages ? (double) resident / (double) pages : -1.0;
+#else
+    (void) samples;
+    return -1.0;   // no cheap residency query for a file mapping here: the caller keeps its SSD assumption
+#endif
+}
+
+bool FileExpertSource::copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) {
+    if (direct_.empty() || n <= 1) return ExpertSource::copy_blobs(layers, experts, dst, n);
+    thread_local std::vector<Fill> fills;
+    fills.clear();
+    uint64_t bytes = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const int64_t l = layers[i], e = experts[i];
+        if (base_ == nullptr || dst[i] == nullptr || l < 0 || e < 0 || l >= n_layers_ || e >= n_expert_) return false;
+        const size_t index = (size_t) l * (size_t) n_expert_ + (size_t) e;
+        if (complement_ready_ &&
+            (resident_blob(index) != nullptr || (!override_.empty() && override_[index] != nullptr))) {
+            if (!copy_blob(l, e, dst[i])) return false;
+            continue;
+        }
+        fills.push_back({0, l, e, dst[i]});
+        bytes += layer_blob_bytes_[(size_t) l];
+    }
+    if (fills.empty()) return true;
+    const auto t0 = std::chrono::steady_clock::now();
+    if (!read_direct(fills.data(), fills.size()))
+        for (const Fill& f : fills)   // a failed batch: each blob on its own (copy_from_files falls back to the mapping)
+            if (!copy_from_files(f.layer, f.e, f.dst)) return false;
+    file_us_.fetch_add((uint64_t) std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count(),
+                       std::memory_order_relaxed);
+    file_read_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    return true;
+}
+
 bool ExpertSource::copy_blob(int64_t layer, int64_t expert, uint8_t* dst) {
     const uint8_t* b = blob(layer, expert);
     if (b == nullptr || dst == nullptr) return false;
@@ -735,7 +806,7 @@ bool FileExpertSource::copy_from_files(int64_t layer, int64_t expert, uint8_t* d
 //
 // `claim_stage` finds or reserves the buffer of `key` (stage_mu_ held): true when the blob is already there (or
 // being filled by another thread - the caller then waits), false when the caller must fill buffer `v`.
-bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill) {
+bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill, bool /*ahead*/) {
     constexpr uint64_t kStageSeq = 256;
     const uint64_t seq = ++stage_seq_;
     auto it = stage_of_.find(key);
@@ -755,7 +826,19 @@ bool FileExpertSource::claim_stage(int64_t key, size_t& v, bool& fill) {
             v = i;
         }
     if (v == stage_buf_.size()) {
-        stage_buf_.emplace_back(new (std::nothrow) uint8_t[(size_t) stage_blob_]);
+        uint8_t* raw = nullptr;
+        const char* pin = std::getenv("STRATA_STAGE_PIN");
+        if (pin != nullptr && std::atoi(pin) != 0) {
+            try {
+                raw = sycl::malloc_host<uint8_t>((size_t) stage_blob_, dpct::get_in_order_queue());
+            } catch (const sycl::exception&) {
+                // As upstream, a failed opt-in allocation falls back to pageable memory.
+            }
+        }
+        const bool pinned = raw != nullptr;
+        if (!pinned) raw = new (std::nothrow) uint8_t[(size_t) stage_blob_];
+        if (raw == nullptr) return false;
+        stage_buf_.emplace_back(raw, StageBufFree{pinned});
         if (!stage_buf_.back()) { stage_buf_.pop_back(); return false; }
         stage_key_.push_back(-1);
         stage_epoch_.push_back(0);
@@ -1181,8 +1264,8 @@ RouterLookahead::~RouterLookahead() {
 }
 
 bool RouterLookahead::start(std::vector<std::vector<uint16_t>> routers, int64_t n_embd, int64_t n_expert, int k,
-                            ExpertSource* src, std::string& err) {
-    if (src == nullptr || !src->warms()) { err = "RouterLookahead: the expert source does not warm"; return false; }
+                            ExpertSource* src, std::string& err, bool allow_cold_source) {
+    if (src == nullptr || (!allow_cold_source && !src->warms())) { err = "RouterLookahead: the expert source does not warm"; return false; }
     if (n_embd % 8 != 0) { err = "RouterLookahead: n_embd is not a multiple of 8"; return false; }
     for (const auto& r : routers)
         if (r.size() != (size_t) (n_embd * n_expert)) { err = "RouterLookahead: a router of another shape"; return false; }
@@ -1307,75 +1390,6 @@ const uint8_t* FileExpertSource::mapped_blob(int64_t layer, int64_t expert) cons
     const uint64_t offset = layer_offset + expert_offset;
     if (blob_bytes > mapped_bytes_ - offset) return nullptr;
     return base_ + (size_t) offset;
-}
-
-bool FileExpertSource::advise_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) const {
-    if (base_ == nullptr || !direct_.empty() || !strata::platform::read_ahead_enabled()) return false;
-    for (int64_t i = 0; pairs != nullptr && i < n; ++i) {
-        const int64_t l = pairs[i].first, e = pairs[i].second;
-        if (l < 0 || e < 0 || l >= n_layers_ || e >= n_expert_) continue;
-        if (role_ptr_.empty()) {   // experts.bin: the blob is one contiguous range
-            if (const uint8_t* b = mapped_blob(l, e)) strata::platform::advise_willneed(b, layer_blob_bytes_[(size_t) l]);
-            continue;
-        }
-        for (int r = 0; r < 3; ++r) {
-            const size_t k = (size_t) (3 * l + r);
-            strata::platform::advise_willneed(role_ptr_[k] + (size_t) ((uint64_t) e * role_bytes_[k]), role_bytes_[k]);
-        }
-    }
-    return true;
-}
-
-uint64_t FileExpertSource::release(int64_t layer, int64_t expert) {
-#if defined(_WIN32)
-    static const bool enabled = [] {
-        const char* v = std::getenv("STRATA_FILE_RELEASE");
-        return v != nullptr && std::strcmp(v, "1") == 0;
-    }();
-    if (!enabled || base_ == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_)
-        return 0;
-    static const uint64_t page = [] {
-        SYSTEM_INFO info{};
-        GetSystemInfo(&info);
-        return (uint64_t) info.dwPageSize;
-    }();
-    // These read-only file views are not CUDA-registered. blob() may instead return pinned RAM or an exchange
-    // buffer, so resolve the file spans directly. A shared boundary page stays for the neighboring expert.
-    auto trim = [&](const uint8_t* p, uint64_t bytes) -> uint64_t {
-        const uint64_t misalignment = (uintptr_t) p % page;
-        const uint64_t skip = misalignment == 0 ? 0 : page - misalignment;
-        if (bytes <= skip) return 0;
-        const uint64_t whole = (bytes - skip) / page * page;
-        if (whole == 0) return 0;
-        SetLastError(ERROR_SUCCESS);
-        if (!VirtualUnlock((LPVOID) (p + (size_t) skip), (SIZE_T) whole)) {
-            const DWORD error = GetLastError();
-            // VirtualUnlock trims an unlocked range and reports FALSE / ERROR_NOT_LOCKED for that success.
-            if (error != ERROR_NOT_LOCKED) {
-                std::fprintf(stderr, "FileExpertSource: cannot trim mapped pages for layer %lld expert %lld "
-                                     "(%llu bytes, Windows error %lu)\n",
-                             (long long) layer, (long long) expert, (unsigned long long) whole,
-                             (unsigned long) error);
-                std::fflush(stderr);
-                return 0;
-            }
-        }
-        return whole;   // bytes advised, not a measurement of physical RAM reclaimed
-    };
-    if (role_ptr_.empty()) {
-        const uint8_t* p = mapped_blob(layer, expert);
-        return p == nullptr ? 0 : trim(p, layer_blob_bytes_[(size_t) layer]);
-    }
-    uint64_t bytes = 0;
-    for (int r = 0; r < 3; ++r) {
-        const size_t i = (size_t) (3 * layer + r);
-        bytes += trim(role_ptr_[i] + (size_t) ((uint64_t) expert * role_bytes_[i]), role_bytes_[i]);
-    }
-    return bytes;
-#else
-    (void) layer; (void) expert;
-    return 0;
-#endif
 }
 
 bool FileExpertSource::pin_cache_complement(
@@ -1855,6 +1869,17 @@ bool FileExpertSource::pin_cache_complement(
                              "too%s\n", (long long) complement_lent_slots_, (long long) (n_slots - lend_from_slot),
                      complement_lent_slots_ < n_slots - lend_from_slot
                          ? " (the others are read from the file when lent: not enough RAM for them)" : "");
+    if (lend && complement_lent_slots_ < n_slots - lend_from_slot) {
+        // #1389: below full coverage the uncovered experts are read from the pack during a long prompt (a 74K prompt
+        // routes through nearly all experts, so the misses repeat). The reporter measured 18% uncovered = -26% prompt
+        // speed on a gfx1100; short prompts barely touch them. A warning, not a refusal.
+        const long long lendable = (long long) (n_slots - lend_from_slot);
+        const long long missing = lendable - (long long) complement_lent_slots_;
+        std::fprintf(stderr, "FileExpertSource: WARNING: %lld of %lld lendable slots (%.0f%%) will read their experts from the pack "
+                             "during a long prompt; expect a slower prompt read on 50K+ token prompts (one measurement: 18%% uncovered "
+                             "cost 26%%). Free RAM or lower STRATA_RESIDENT_HEADROOM_GIB (now the RAM left free at start) and restart; "
+                             "the line above should read N of N.\n", missing, lendable, 100.0 * (double) missing / (double) std::max<long long>(1, lendable));
+    }
     if (!additional_gpu_pairs.empty()) {
         std::fprintf(stderr, "FileExpertSource: %zu verified additional-GPU experts remain on the mmap fallback\n",
                      additional_gpu_pairs.size());
@@ -1954,6 +1979,93 @@ int64_t FileExpertSource::commit_exchanges() {
     staged_.clear();
     exchanges_ += n;
     return n;
+}
+
+const uint8_t* FileExpertSource::blob_stable(int64_t layer, int64_t expert) {
+    if (io_pf_ && role_ptr_.empty() && direct_.empty()) {
+        if (complement_ready_ && layer >= 0 && expert >= 0 && layer < n_layers_ && expert < n_expert_) {
+            const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
+            if (resident_blob(index) != nullptr || (!override_.empty() && override_[index] != nullptr)) return blob(layer, expert);
+        }
+        const uint8_t* b = mapped_blob(layer, expert);
+        if (b != nullptr) file_read_bytes_.fetch_add(layer_blob_bytes_[(size_t) layer], std::memory_order_relaxed);
+        return b;
+    }
+    return blob(layer, expert);
+}
+
+const uint8_t* FileExpertSource::resident_blob(size_t index) const {
+    if (exchange_storage_.active()) return exchange_storage_.resident(index).host;
+    return detail::cache_complement_blob_or_fallback(index, complement_offsets_, complement_host_, nullptr);
+}
+
+bool FileExpertSource::advise_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) const {
+    if (base_ == nullptr || !direct_.empty() || !strata::platform::read_ahead_enabled()) return false;
+    for (int64_t i = 0; pairs != nullptr && i < n; ++i) {
+        const int64_t l = pairs[i].first, e = pairs[i].second;
+        if (l < 0 || e < 0 || l >= n_layers_ || e >= n_expert_) continue;
+        if (role_ptr_.empty()) {   // experts.bin: the blob is one contiguous range
+            if (const uint8_t* b = mapped_blob(l, e)) strata::platform::advise_willneed(b, layer_blob_bytes_[(size_t) l]);
+            continue;
+        }
+        for (int r = 0; r < 3; ++r) {
+            const size_t k = (size_t) (3 * l + r);
+            strata::platform::advise_willneed(role_ptr_[k] + (size_t) ((uint64_t) e * role_bytes_[k]), role_bytes_[k]);
+        }
+    }
+    return true;
+}
+
+uint64_t FileExpertSource::release(int64_t layer, int64_t expert) {
+#if defined(_WIN32)
+    static const bool enabled = [] {
+        const char* v = std::getenv("STRATA_FILE_RELEASE");
+        return v != nullptr && std::strcmp(v, "1") == 0;
+    }();
+    if (!enabled || base_ == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ || expert >= n_expert_)
+        return 0;
+    static const uint64_t page = [] {
+        SYSTEM_INFO info{};
+        GetSystemInfo(&info);
+        return (uint64_t) info.dwPageSize;
+    }();
+    // These read-only file views are not CUDA-registered. blob() may instead return pinned RAM or an exchange
+    // buffer, so resolve the file spans directly. A shared boundary page stays for the neighboring expert.
+    auto trim = [&](const uint8_t* p, uint64_t bytes) -> uint64_t {
+        const uint64_t misalignment = (uintptr_t) p % page;
+        const uint64_t skip = misalignment == 0 ? 0 : page - misalignment;
+        if (bytes <= skip) return 0;
+        const uint64_t whole = (bytes - skip) / page * page;
+        if (whole == 0) return 0;
+        SetLastError(ERROR_SUCCESS);
+        if (!VirtualUnlock((LPVOID) (p + (size_t) skip), (SIZE_T) whole)) {
+            const DWORD error = GetLastError();
+            // VirtualUnlock trims an unlocked range and reports FALSE / ERROR_NOT_LOCKED for that success.
+            if (error != ERROR_NOT_LOCKED) {
+                std::fprintf(stderr, "FileExpertSource: cannot trim mapped pages for layer %lld expert %lld "
+                                     "(%llu bytes, Windows error %lu)\n",
+                             (long long) layer, (long long) expert, (unsigned long long) whole,
+                             (unsigned long) error);
+                std::fflush(stderr);
+                return 0;
+            }
+        }
+        return whole;   // bytes advised, not a measurement of physical RAM reclaimed
+    };
+    if (role_ptr_.empty()) {
+        const uint8_t* p = mapped_blob(layer, expert);
+        return p == nullptr ? 0 : trim(p, layer_blob_bytes_[(size_t) layer]);
+    }
+    uint64_t bytes = 0;
+    for (int r = 0; r < 3; ++r) {
+        const size_t i = (size_t) (3 * layer + r);
+        bytes += trim(role_ptr_[i] + (size_t) ((uint64_t) expert * role_bytes_[i]), role_bytes_[i]);
+    }
+    return bytes;
+#else
+    (void) layer; (void) expert;
+    return 0;
+#endif
 }
 
 const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
@@ -2700,7 +2812,8 @@ bool check_experts_gguf(const std::string& gguf, const strata::kernels::cpu::Exp
 // an aligned buffer and scattered into the blobs - no copy through the file cache when the drive is read anyway.
 LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
                             int threads, bool unbuffered, const std::atomic<int>* ready) {
-    // Match the shared loader API: registration must reach the next slice before this layer is written.
+    // `ready`: layer l is written only once *ready > l + 1 (a PinnedArena registering its slices meanwhile; the next
+    // slice too, since its registration starts on the page that may hold this layer's tail)
     auto wait_ready = [ready](int64_t l) {
         if (ready != nullptr)
             while (ready->load(std::memory_order_acquire) <= l + 1) std::this_thread::yield();

@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <condition_variable>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -87,6 +88,17 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo = "/proc/me
 /// Pass UINT64_MAX for commit when the platform does not report it.
 uint64_t clamp_resident_budget(uint64_t requested, uint64_t physical, uint64_t commit, uint64_t headroom);
 
+/// #1250: one cudaHostAlloc of the whole page-locked complement has no way back when the kernel does not give the
+/// pages as fast as the driver takes them (the process is OOM-killed, even with MemAvailable high: clean file cache
+/// that cannot be reclaimed at that moment).  `free_now` is MemFree (pages that are really free), `bytes` the
+/// complement, `reserve` what must stay.  True when the pages would have to come from reclaimed cache.
+bool pin_depends_on_reclaim(uint64_t free_now, uint64_t bytes, uint64_t reserve);
+/// The paced registration takes the next `step` bytes only while the RAM available after it (cgroup limits included)
+/// is still above `reserve`.
+bool pin_step_fits(uint64_t available, uint64_t step, uint64_t reserve);
+/// Parses `key` ("MemFree") of a /proc/meminfo text; 0 when absent.
+uint64_t meminfo_bytes(const std::string& meminfo_text, const std::string& key);
+
 /// Build compact offsets for experts absent from both the primary GPU cache and an optional second GPU tier.
 /// Kept CPU-only so selection and byte accounting can be tested without initializing a GPU.
 bool make_cache_complement_plan(
@@ -131,6 +143,9 @@ public:
     /// immediately and nothing is retained.  A CACHING source must return pointers into the cache, not into a
     /// reused staging buffer - otherwise the pool would read the next expert's bytes while computing this one.
     virtual const uint8_t* blob(int64_t layer, int64_t expert) = 0;
+    /// A blob pointer that stays valid (not recycled) for as long as the source is open: for a copy that runs
+    /// asynchronously long after the call (the adaptive tier's swap-ins).  Defaults to `blob`.
+    virtual const uint8_t* blob_stable(int64_t layer, int64_t expert) { return blob(layer, expert); }
 
     /// Blobs touched, for the driver to report.  A source that does not count returns 0.
     virtual int64_t reads() const { return 0; }
@@ -159,6 +174,11 @@ public:
     /// stays valid for the layer it was asked in and the next one or two; a consumer that keeps a blob longer (the
     /// prompt path's stager queues a whole chunk) copies it with `copy_blob` instead.
     virtual bool transient(int64_t layer, int64_t expert) const { (void) layer; (void) expert; return false; }
+    /// #1353: of the bytes `transient` experts would be copied from, the share whose pages are in RAM right now (a
+    /// GGUF read in place whose page cache is warm), measured on a sample of up to `samples` experts; -1 when this
+    /// source cannot tell (not a file source, or no residency query on this OS).  The prompt path's stager uses it to
+    /// pick the SSD profile (many threads, a deep ring) only for blobs that really are page faults on a disk.
+    virtual double cached_share(int64_t samples) const { (void) samples; return -1.0; }
     /// Disk sessions: the files this source read its experts from, as (role, path), resolved by the loader itself
     /// - the pack's experts.bin, or every GGUF tensor native_experts.txt named, per layer and role
     /// ("expert blk.L.ffn_up").  Filled by open(); empty before.
@@ -170,6 +190,10 @@ public:
     virtual bool advise_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) const {
         (void) pairs; (void) n; return false;
     }
+    /// pp-opt: `n` blobs at once (the prompt path's stager claims runs of consecutive experts): `dst[i]` gets the
+    /// blob of (layers[i], experts[i]).  A source that reads a drive may merge neighbouring blobs into one request.
+    /// Default: copy_blob one by one.
+    virtual bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n);
     /// The `n` experts of `layer` the CPU is about to ask `blob` for, all at once: a source that reads a file may
     /// fetch them in parallel.  The bytes `blob` then returns are the same.  Default: nothing.
     virtual void prefetch(int64_t layer, const int64_t* experts, int64_t n) { (void) layer; (void) experts; (void) n; }
@@ -190,6 +214,7 @@ protected:
 /// next - takes each token's top `k` experts, drops the ones the GPU cache or the RAM copy holds, and asks the
 /// source to `warm` the rest, so their pages are on the way while layer l computes.  A prediction only warms pages:
 /// it never changes which experts are computed or how.
+struct ForesightSwap;
 class RouterLookahead {
 public:
     RouterLookahead() = default;
@@ -198,10 +223,18 @@ public:
     RouterLookahead& operator=(const RouterLookahead&) = delete;
     /// `routers[l]`: layer l's ffn_gate_inp as BF16 bits, n_expert rows of n_embd.
     bool start(std::vector<std::vector<uint16_t>> routers, int64_t n_embd, int64_t n_expert, int k, ExpertSource* src,
-               std::string& err);
+               std::string& err, bool allow_cold_source = false);
+    /// One prefetch design (#1348): the predicted experts that no cache holds also go to the Foresight swap space
+    /// (ForesightSwap::predict), which copies them to VRAM ahead of the layer.  nullptr detaches it (waits for a
+    /// prediction in progress), so the swap space can be destroyed first.
+    void set_foresight(ForesightSwap* fs);
     /// Layer `layer`'s MoE input for `n_tok` tokens (host floats): predict and warm layer + 1.  Never waits: a
     /// prediction still running for an earlier layer makes this one skip.
     void submit(int64_t layer, const float* x, int64_t n_tok, const int32_t* host_res);
+    /// STRATA_IO_PREFETCH_DEPTH: how many layers ahead of `layer` are predicted and warmed (default 1, the next layer).
+    /// A deeper one predicts layer + j from layer's input, which is less exact the further it looks.
+    void set_depth(int d) { depth_ = d < 1 ? 1 : d > 4 ? 4 : d; }
+    int depth() const { return depth_; }
     int64_t predicted() const { return predicted_.load(std::memory_order_relaxed); }
     int64_t skipped() const { return skipped_.load(std::memory_order_relaxed); }
     double busy_ms() const { return (double) busy_us_.load(std::memory_order_relaxed) / 1000.0; }
@@ -211,6 +244,7 @@ private:
     std::vector<std::vector<uint16_t>> routers_;
     int64_t n_embd_ = 0, n_expert_ = 0;
     int k_ = 10;
+    int depth_ = 1;
     ExpertSource* src_ = nullptr;
     std::thread thread_;
     std::mutex mu_;
@@ -218,6 +252,7 @@ private:
     bool quit_ = false, pending_ = false, busy_ = false;
     int64_t layer_ = -1, n_tok_ = 0;
     const int32_t* host_res_ = nullptr;
+    ForesightSwap* fs_ = nullptr;                   ///< (under mu_)
     std::vector<float> x_;
     std::atomic<int64_t> predicted_{0}, skipped_{0};
     std::atomic<uint64_t> busy_us_{0};
@@ -251,7 +286,10 @@ struct GpuPlanSink {
 };
 
 /// The adapter's own state.  One per session, reused every layer so the token path allocates nothing (P2.T10).
+struct ForesightSwap;
+
 struct ExpertDispatch {
+    ForesightSwap* fs = nullptr;   ///< Foresight swap space (STRATA_FS_SLOTS; null = off)
     strata::kernels::cpu::ExpertPool* pool = nullptr;
     ExpertSource* src = nullptr;
     RouterLookahead* lookahead = nullptr;   ///< CS-T: warms the next layer's predicted file-tier experts
@@ -548,6 +586,11 @@ public:
     /// expert bytes outside it; switches either way (startup only, nothing reading).  Returns whether unbuffered.
     bool recheck_unbuffered(std::string& why);
     bool unbuffered() const { return !direct_.empty(); }
+    /// pp-opt (Windows, experts.bin, unbuffered): close the mapped view once startup no longer needs it.  NTFS runs
+    /// the unbuffered reads of a mapped file one at a time - on a PCIe 4 NVMe (WD SN580) 2 MiB reads at queue depth
+    /// 32 measured 2.35 GB/s with experts.bin mapped and 3.57 GB/s without.  After this every file read goes through
+    /// read_direct (mapped_blob answers nullptr).  Returns whether the view was closed; `why` says why not.
+    bool drop_mapping(std::string& why);
     /// Every expert's bytes (n_layers x n_expert blobs).
     uint64_t expert_bytes() const;
     /// #286, unbuffered: assembles the blobs of these pairs ahead of the `blob` calls that will ask for them (the
@@ -558,6 +601,8 @@ public:
     bool advise_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) const override;
 
     const uint8_t* blob(int64_t layer, int64_t expert) override;
+    /// With io prefetch in the experts.bin tier, the mapping itself (blob() may hand out a recycled staging buffer).
+    const uint8_t* blob_stable(int64_t layer, int64_t expert) override;
     /// Windows, opt-in with STRATA_FILE_RELEASE=1: trim the file mapping's full pages after their expert reaches
     /// VRAM. Never touches the resident complement or staging buffers. Disabled by default.
     uint64_t release(int64_t layer, int64_t expert) override;
@@ -565,7 +610,10 @@ public:
     const uint8_t* device_alias(int64_t layer, int64_t expert) const override;
     bool pcie_layer(int64_t layer) const override;
     bool transient(int64_t layer, int64_t expert) const override;
+    double cached_share(int64_t samples) const override;
     bool copy_blob(int64_t layer, int64_t expert, uint8_t* dst) override;
+    /// pp-opt, unbuffered: the file-tier blobs of the run in one read_direct batch (neighbours merged into one request)
+    bool copy_blobs(const int32_t* layers, const int32_t* experts, uint8_t* const* dst, size_t n) override;
     /// CS-T: advances the assembled blobs' age (see staged_blob).
     void begin_layer(int64_t layer, const int32_t* ids, int64_t k) override;
     /// CS-T: the GGUF in place assembles the missed experts on `fetch_threads_` threads.
@@ -574,7 +622,7 @@ public:
     /// madvise(WILLNEED) elsewhere), skipping the RAM copy's.
     void warm(int64_t layer, const int64_t* experts, int64_t n) override;
     /// Not when the reads are unbuffered: the warmed pages would be read through the file cache, a second time.
-    bool warms() const override { return !role_ptr_.empty() && direct_.empty(); }
+    bool warms() const override { return (!role_ptr_.empty() || io_pf_) && direct_.empty(); }
     /// Of the blobs the file tier read for the decode, how many had been warmed for their layer beforehand.
     int64_t warmed_hits() const { return warm_hits_.load(std::memory_order_relaxed); }
     int64_t warmed() const { return warm_count_.load(std::memory_order_relaxed); }
@@ -585,6 +633,33 @@ public:
     /// interesting once Phase 3 makes it not so.
     int64_t reads() const override { return reads_; }
 
+    // ---- the Linux I/O path of the mapped file tier (STRATA_IO_PREFETCH=1, opt in; no effect on Windows)
+    //
+    // The file tier's reads are page faults: the CPU kernels (experts.bin) or the fetch threads (the GGUF in place)
+    // touch the mapping, and each fault is a read of a few pages that blocks the layer.  With this on:
+    //   - an expert whose pages are not in the page cache is read with ONE pread of its whole blob (large requests,
+    //     several at once) into a staging buffer instead of being faulted in;
+    //   - the experts the router lookahead predicts for the next layers are read the same way on a pool of I/O
+    //     threads, while the current layer computes (warm() queues them; the kernels then find them staged);
+    //   - an expert whose pages are all cached is still handed out as the mapped pointer (no copy).
+    // The bytes are the same bytes, so the output is the same.  `threads` = I/O threads (0: default 4).
+    void set_io_prefetch(bool on, int threads);
+    bool io_prefetch() const { return io_pf_; }
+    /// Counts the cached / uncached bytes of every blob read from the files (mincore, page-granular).  Free with
+    /// io_prefetch; otherwise opt in with STRATA_IO_STATS=1 (the check costs a few microseconds per blob).
+    void set_io_stats(bool on) { io_stats_ = on || io_pf_; }
+    bool io_stats() const { return io_stats_; }
+    struct IoCounters {
+        uint64_t cached_bytes = 0, uncached_bytes = 0;       ///< file reads at hand-out, by page-cache residency
+        uint64_t pread_bytes = 0, pread_us = 0, pread_n = 0; ///< bytes read with pread, thread time, calls
+        uint64_t pf_demand = 0;                              ///< blobs the layer asked for that the workers were handed
+        uint64_t pf_jobs = 0, pf_read_blobs = 0, pf_resident_skips = 0, pf_dropped = 0;   ///< prefetch workers
+        uint64_t pf_used = 0, pf_unused = 0;                 ///< prefetched blobs a layer then used / never used
+        uint64_t crit_us = 0;                                ///< wall time the decode waited on file reads (prefetch + staged_blob)
+        uint64_t crit_n = 0;
+    };
+    IoCounters io_counters() const;
+
 private:
     const uint8_t* resident_blob(size_t index) const;
     const uint8_t* mapped_blob(int64_t layer, int64_t expert) const;
@@ -592,7 +667,7 @@ private:
     bool copy_from_files(int64_t layer, int64_t expert, uint8_t* dst) const;
     bool open_gguf(std::string& err);
     const uint8_t* staged_blob(int64_t layer, int64_t expert);
-    bool claim_stage(int64_t key, size_t& v, bool& fill);
+    bool claim_stage(int64_t key, size_t& v, bool& fill, bool ahead = false);
     bool fill_stage(size_t v, int64_t layer, int64_t expert, uint8_t* dst);
     void publish_stage(size_t v, int64_t layer, bool ok, double us);
     struct Fill { size_t v; int64_t layer, e; uint8_t* dst; };
@@ -606,7 +681,7 @@ private:
     std::vector<void*> direct_;               ///< #286: per file, an unbuffered handle (Windows) or O_DIRECT fd (Linux)
     std::vector<int> role_file_;              ///< 3 x n_layers: index into maps_ / direct_
     /// blobs assembled in the stage buffers (`blob` hands those out): the GGUF in place, or any unbuffered source
-    bool staged() const { return !role_ptr_.empty() || !direct_.empty(); }
+    bool staged() const { return !role_ptr_.empty() || !direct_.empty() || io_pf_; }
     static constexpr uint64_t kNoComplement = detail::kNoCacheComplement;
     // ---- CS-T: the GGUF shards in place
     std::string gguf_;
@@ -627,8 +702,16 @@ private:
     // reused only once `kStageAge` layer changes have passed since its blob was last asked for, so a pointer holds
     // through the layer it was asked in and the next ones (the pool computes a layer's misses before the next).
     static constexpr uint64_t kStageAge = 3;
+    // A stage buffer feeds cudaMemcpyAsync (the cache fill), so it is cudaHostAlloc'd where the driver allows:
+    // a pageable source would be staged through the driver's bounce buffer - an extra copy at a fraction of
+    // the transfer rate, with the calling thread doing it.  `pinned` picks the free (defined in the .cpp: the
+    // header has no cuda_runtime.h).
+    struct StageBufFree {
+        bool pinned = false;
+        void operator()(uint8_t* p) const noexcept;
+    };
     std::mutex stage_mu_;
-    std::vector<std::unique_ptr<uint8_t[]>> stage_buf_;
+    std::vector<std::unique_ptr<uint8_t[], StageBufFree>> stage_buf_;
     std::vector<int64_t> stage_key_;
     std::vector<uint64_t> stage_epoch_, stage_used_;
     std::vector<char> stage_busy_;            ///< being filled (outside stage_mu_): never a victim
@@ -644,8 +727,35 @@ private:
     uint64_t epoch_ = 0;
     int64_t last_layer_ = -1;
     bool stage_grew_ = false;
+    bool stage_pin_said_ = false, stage_pin_failed_said_ = false;   ///< the one-time notes in claim_stage
     std::atomic<int64_t> ram_reads_{0};
     std::atomic<uint64_t> file_read_bytes_{0};
+    // ---- the Linux I/O path (set_io_prefetch)
+    bool io_pf_ = false;
+    bool io_fill_ = false;                            ///< experts.bin: the workers only fill the page cache (large preads), no staging, nothing waits
+    bool io_ahead_ = true;                            ///< STRATA_IO_PF_AHEAD=0: no read-ahead workers' queue, demand preads only
+    bool io_stats_ = false;
+    int io_threads_ = 4;
+    std::vector<std::thread> io_workers_;
+    std::mutex io_mu_;
+    std::condition_variable io_cv_;
+    std::deque<std::pair<int32_t, int32_t>> io_q_;   ///< (layer, expert) to read ahead
+    bool io_quit_ = false;
+    std::vector<char> stage_pf_;                      ///< per stage buffer: filled ahead, not yet used by a layer
+    std::vector<int> io_fds_;                         ///< per mapped file: a plain descriptor (POSIX_FADV_RANDOM) for the preads
+    mutable std::atomic<uint64_t> io_cached_{0}, io_uncached_{0}, io_pread_bytes_{0}, io_pread_us_{0}, io_pread_n_{0};
+    std::atomic<uint64_t> io_pf_jobs_{0}, io_pf_demand_{0}, io_pf_blobs_{0}, io_pf_skips_{0}, io_pf_dropped_{0}, io_pf_used_{0}, io_pf_unused_{0},
+        io_crit_us_{0}, io_crit_n_{0};
+    struct Span { const uint8_t* p; uint64_t n; int fd; uint64_t off; uint64_t at; };
+    /// The (up to 3) file ranges of a blob: pointer in the mapping, size, descriptor and file offset, offset in the blob.
+    int spans(int64_t layer, int64_t expert, Span* out) const;
+    /// Bytes of the blob's pages in the page cache (mincore); `total` the blob's bytes.
+    /// `exact` false: four sampled pages (a blob is cached when they are; a handful of syscalls, not hundreds of pages' walk).
+    uint64_t cached_bytes(int64_t layer, int64_t expert, uint64_t& total, bool exact = true) const;
+    void io_worker();
+    void io_enqueue(int64_t layer, int64_t expert);
+    void io_stop();
+    const uint8_t* io_blob(int64_t layer, int64_t expert);
     const uint8_t* base_ = nullptr;
     int64_t blobs_ = 0;
     int64_t n_layers_ = 0;
@@ -660,6 +770,7 @@ private:
     detail::ExchangeStorage exchange_storage_; // authoritative when active; original arenas still own memory
     bool complement_pinned_ = false;
     bool complement_partial_ = false;         ///< CS-T: only the first complement_pin_limit_ bytes are registered
+    bool complement_registered_ = false;      ///< the arena is ordinary memory registered with cudaHostRegister (not cudaHostAlloc)
     uint64_t complement_pin_limit_ = 0;
     uint64_t complement_lock_off_ = 0;        ///< the working-set lock covers [lock_off, lock_off + locked)
     bool complement_ready_ = false;
@@ -681,6 +792,7 @@ private:
 #else
     int fd_ = -1;
 #endif
+    bool unmapped_ = false;   ///< pp-opt: drop_mapping closed the view (base_ stays as the "opened" mark only)
 };
 
 // ================================ THE RESIDENT ARENA (R2.1) ================================

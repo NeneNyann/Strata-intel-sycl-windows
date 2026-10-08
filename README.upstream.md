@@ -65,13 +65,11 @@ The installer sets up everything else. Two or three cards can share the model ([
 Experimental, written and tested by community members on their own machines:
 
 - **Older graphics cards** (Tesla P40 / V100, GTX 10, Radeon VII / MI50, RX 6700 XT, RX 5500 XT): [Older GPUs](docs/OLDER_GPUS.md).
-- **Intel Arc (experimental):** [Windows release package and setup](docs/SYCL_WINDOWS.md), [Linux source build](docs/INTEL_ARC.md).
+- **Intel Arc**, built from source on Linux: [Intel Arc](docs/INTEL_ARC.md).
 - **AMD Ryzen AI Max (Strix Halo)**, built from source on Linux: [Strix Halo](docs/STRIX_HALO.md).
 - **Older processors without AVX2**: they work, but slowly. [Older CPUs](docs/INSTALL.md#older-cpus-experimental).
 
 The full list: [docs/INSTALL.md](docs/INSTALL.md#what-you-need).
-
-On Windows, select Intel explicitly with `START-HERE.bat --backend sycl`; add `--setup --vision gpu` to enable images. B580 12 GB measured 31.46 tok/s with IQ2_XS + MTP: [benchmark and conditions](docs/SYCL_WINDOWS.md#benchmark).
 
 ## Install
 
@@ -80,7 +78,7 @@ On Windows, select Intel explicitly with `START-HERE.bat --backend sycl`; add `-
 Do you use an AI coding assistant (Claude Code, Cursor, Codex, GitHub Copilot, ...)? Paste this into it:
 
 ```text
-Set up Strata on this PC for me: https://github.com/NeneNyann/Strata-intel-sycl-windows - follow docs/AI_SETUP.md in that repository.
+Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
 ```
 
 It checks your graphics card, RAM and disk and picks the model that fits. Then it installs and starts it and tells
@@ -89,11 +87,11 @@ you how to connect your apps. AI tools can also install, start and stop Strata t
 
 ### Or do it yourself
 
-[Download Strata](https://github.com/NeneNyann/Strata-intel-sycl-windows/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
+[Download Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) and unzip it (or `git clone` it).
 **Windows:** double-click **`START-HERE.bat`**. **Linux:** run **`./setup.sh`** in the Strata folder.
 
-The steps are the same for NVIDIA, AMD and experimental Intel Arc on Windows. The installer finds your card,
-sets up the right engine and asks you a few questions:
+The steps are the same for NVIDIA and AMD. The installer finds your card and sets up the right engine for it. It
+asks you a few questions:
 
 - which model and which size,
 - how much context (how much text the model keeps in mind),

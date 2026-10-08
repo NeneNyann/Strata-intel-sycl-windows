@@ -102,9 +102,9 @@ def metadata(eng: Path) -> dict:
 
 def valid_package(eng: Path) -> bool:
     meta = metadata(eng)
-    version = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:3] if x.isdigit())
+    version = tuple(int(x) for x in str(meta.get("version", "0")).split(".")[:4] if x.isdigit())
     return meta.get("backend") == "sycl" and meta.get("platform") == "windows-x64" and \
-        version >= S.MIN_ENGINE and all((eng / name).is_file() for name in
+        version + (0,) * (4 - len(version)) >= S.MIN_ENGINE and all((eng / name).is_file() for name in
                                        ("strata.exe", "strata-device.exe", "strata-vision.exe"))
 
 
@@ -280,7 +280,7 @@ def install(argv) -> int:
         eng = ROOT / "engine"
         installed = metadata(eng)
         def version(text):
-            return tuple(int(x) for x in str(text).split(".")[:3] if x.isdigit())
+            return tuple(int(x) for x in str(text).split(".")[:4] if x.isdigit())
         if valid_package(eng) and version(installed.get("version", "0")) >= version(S.source_version()):
             return
         try:

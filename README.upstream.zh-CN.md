@@ -64,13 +64,11 @@ NVIDIA：Q2_0 用的是引擎 0.1.36，其他各行用的是 0.1.26（4K 回答�
 实验性支持，由社区成员在自己的机器上编写和测试：
 
 - **较老的显卡**（Tesla P40 / V100、GTX 10、Radeon VII / MI50、RX 6700 XT、RX 5500 XT）：[较老的 GPU](docs/OLDER_GPUS.md)。
-- **Intel Arc（实验性）：** [Windows 安装与 release 包](docs/SYCL_WINDOWS.md)，[Linux 源码构建](docs/INTEL_ARC.md)。
+- **Intel Arc**，在 Linux 上从源码构建：[Intel Arc](docs/INTEL_ARC.md)。
 - **AMD Ryzen AI Max（Strix Halo）**，在 Linux 上从源码构建：[Strix Halo](docs/STRIX_HALO.md)。
 - **不支持 AVX2 的老处理器**：能用，但很慢。[较老的 CPU](docs/INSTALL.md#older-cpus-experimental)。
 
 完整列表：[docs/INSTALL.md](docs/INSTALL.md#what-you-need)。
-
-Windows 上可运行 `START-HERE.bat --backend sycl` 选择 Intel；添加 `--setup --vision gpu` 启用图片。B580 12 GB 使用 IQ2_XS + MTP 实测 31.46 tok/s：[benchmark 与测试条件](docs/SYCL_WINDOWS.md#benchmark)。
 
 ## 安装
 
@@ -79,7 +77,7 @@ Windows 上可运行 `START-HERE.bat --backend sycl` 选择 Intel；添加 `--se
 你在用 AI 编程助手吗（Claude Code、Cursor、Codex、GitHub Copilot 等）？把下面这段粘贴给它：
 
 ```text
-Set up Strata on this PC for me: https://github.com/NeneNyann/Strata-intel-sycl-windows - follow docs/AI_SETUP.md in that repository.
+Set up Strata on this PC for me: https://github.com/Niko1221/Strata - follow docs/AI_SETUP.md in that repository.
 ```
 
 它会检查你的显卡、内存和硬盘，选出合适的模型。然后安装并启动它，再告诉你怎么连接你的应用。AI 工具也可以通过
@@ -87,10 +85,10 @@ Strata 的 [MCP 服务器](docs/MCP_SERVER.md)来安装、启动和停止 Strata
 
 ### 或者自己动手
 
-[下载 Strata](https://github.com/NeneNyann/Strata-intel-sycl-windows/archive/refs/heads/main.zip) 并解压（或者用 `git clone`）。
+[下载 Strata](https://github.com/Niko1221/Strata/archive/refs/heads/main.zip) 并解压（或者用 `git clone`）。
 **Windows：** 双击 **`START-HERE.bat`**。**Linux：** 在 Strata 文件夹里运行 **`./setup.sh`**。
 
-NVIDIA、AMD 和 Windows 上实验性支持的 Intel Arc 使用相同的安装步骤。安装程序会识别你的显卡，并装好对应的引擎。它会问你几个问题：
+NVIDIA 和 AMD 的步骤完全一样。安装程序会识别你的显卡，并装好对应的引擎。它会问你几个问题：
 
 - 用哪个模型、哪个规格，
 - 上下文多大（模型能记住多少文字），

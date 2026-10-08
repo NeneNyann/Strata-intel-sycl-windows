@@ -1,6 +1,7 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
+#include "strata/sycl_queue.hpp"
 #include "strata/core/verify.hpp"
 #if defined(_WIN32)
 #include <intrin.h>
@@ -40,6 +41,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <filesystem>
 #include <map>
 #include <string>
 #include <thread>
@@ -84,15 +86,30 @@ const bool g_doorbell_store = env_on("STRATA_DOORBELL_STORE");
 #endif
 const bool g_trace = env_on("STRATA_VERIFY_TRACE");
 
+// True when the GPU runs under the i915 kernel driver (Arc Alchemist: A310-A770), read from sysfs.
+bool intel_i915_gpu() { return strata::intel_gpu_driver() == "i915"; }
+
+// How long the host waits for a layer's doorbell before it gives the window up (#267).  20 s by default; the first
+// window of a run on a card that JIT-compiles its kernels (no AOT: an Arc A750 needs FP64 emulation) can take longer
+// to start, so STRATA_RING_TIMEOUT_S raises it.
+std::chrono::seconds strata_ring_timeout() {
+    static const long s = [] {
+        const char* v = std::getenv("STRATA_RING_TIMEOUT_S");
+        const long n = v ? std::atol(v) : 20;
+        return n >= 1 ? n : 20L;
+    }();
+    return std::chrono::seconds(s);
+}
+
 bool mapped(size_t bytes, void **h, void **d) try {
     /*
     DPCT1048: The original value cudaHostAllocMapped is not meaningful in the
     migrated code and was removed or replaced with 0. You may need to check the
     migrated code.
     */
-    if (DPCT_CHECK_ERROR(*h = (void *)sycl::malloc_host(
+    if (DPCT_CHECK_ERROR(*h = strata::host_malloc_polled(
                              bytes, dpct::get_in_order_queue())) !=
-        0) return false;
+        0 || *h == nullptr) return false;   // polled by the window's kernels: uncached host memory (sycl_queue.hpp)
     std::memset(*h, 0, bytes);
     return DPCT_CHECK_ERROR(*d = (void *)*h) == 0;
 }
@@ -295,7 +312,7 @@ Verifier::~Verifier() try {
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
                      h_flagA_, h_plan_, h_flagB_};
     for (void* h : hosts)
-        if (h) sycl::free(h, dpct::get_in_order_queue());
+        if (h) strata::host_free_polled(h, dpct::get_in_order_queue());
 } catch (...) {
 }
 
@@ -443,12 +460,12 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
     };
     Bump count;
     carve(count);
-    if (DPCT_CHECK_ERROR(arena_ = (void *)sycl::malloc_device(
+    if (DPCT_CHECK_ERROR(arena_ = (void *)strata::malloc_device_guarded(
                              count.used, dpct::get_in_order_queue())) != 0) {
         err = "verify: the device arena (" + std::to_string(count.used >> 20) + " MiB) does not fit";
         return false;
     }
-    dpct::get_in_order_queue().memset(arena_, 0, count.used).wait();
+    strata::big_fill_zero(dpct::get_in_order_queue(), arena_, count.used);
     if (g_trace && trace_h_ == nullptr) {   // #649: the breadcrumbs, mapped so they read while the GPU hangs
         trace_n_ = (size_t) (g.n_layers + 1) * kProfPer * 2;
         if (!mapped(trace_n_ * 8, (void**) &trace_h_, (void**) &trace_m_)) {
@@ -1331,6 +1348,16 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     VDBG("staged; launching\n");
     static Clock::time_point t_prev_end;   // SYCL port timing: where does a round's wall clock go?
     const Clock::time_point t_launch = Clock::now();
+    {   // SYCL port: on an Arc A750 the first window after other GPU work (a prefill, the previous request) never
+        // started when it was launched behind that work still in flight on another queue (no GPU breadcrumb, 20 s
+        // timeout, the engine dies). Letting the other queues drain before every window removes it (9 of 9 three-request runs pass; before, almost all
+        // failed; the gap rule alone (=2) did not help, so it is the windows after each other, not only the first). The cost is
+        // the overlap of a window with the previous commit's tail.  STRATA_WINDOW_SYNC=1 always drains, =0 never, =2 the gap rule; the default is 1 on an i915 card, 0 elsewhere.
+        static const char* wv = std::getenv("STRATA_WINDOW_SYNC");
+        static const int wmode = wv ? std::atoi(wv) : (intel_i915_gpu() ? 1 : 0);
+        const bool first_or_gap = t_prev_end.time_since_epoch().count() == 0 || (t_launch - t_prev_end) > std::chrono::milliseconds(20);
+        if (wmode == 1 || (wmode == 2 && first_or_gap)) dpct::get_current_device().queues_wait_and_throw();
+    }
     const dpct::err0 le = (std::getenv("STRATA_VERIFY_EAGER") != nullptr)
                               ? (record_window(T, cs_, err) ? 0 : 1)   // SYCL port: eager replay of the window body
                               : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*exec_[T]));
@@ -1362,7 +1389,7 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     // memory are not reliably visible while the graph runs (measured: the ring is seen late or not at all),
     // so waiting on them per layer fails. STRATA_VERIFY_NO_HOST=1 waits for the whole window instead. Only for
     // an all-resident cache: a missed expert would leave the GPU waiting for a plan that never comes.
-    static const bool no_host = std::getenv("STRATA_VERIFY_NO_HOST") != nullptr;
+    static const bool no_host = [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }();
     const int64_t steps = (le_ - lb_) * G;
     const bool test_stall = g_test_stall > 0 && windows + 1 == g_test_stall;   // #267 test hook (off: false)
     for (int64_t k = 0; !no_host && k < steps; ++k) {
@@ -1401,7 +1428,7 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
                     return false;
                 }
             }
-            if (now - a > std::chrono::seconds(20)) {
+            if (now - a > strata_ring_timeout()) {
                 // #267: the caller ends the engine; no spin kernel may outlive it
                 trace_ev("TIMEOUT", k, l, (int64_t) !cs_->ext_oneapi_empty());   // SYCL port: 1 = still running
                 if (g_trace) {
@@ -1452,14 +1479,14 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     trace_ev("SYNC", -1, -1, 0);
     const dpct::err0 se = DPCT_CHECK_ERROR(cs_->wait());
     trace_ev("SYNCED", -1, -1, (int64_t) se);
+    const Clock::time_point t_done = Clock::now();
     if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {
-        const Clock::time_point t_done = Clock::now();
         std::fprintf(stderr, "verify dbg: T=%d window: since previous window %.1f ms, staging %.1f ms, gpu %.1f ms\n", T,
                      t_prev_end.time_since_epoch().count() ? std::chrono::duration<double, std::milli>(t0 - t_prev_end).count() : 0.0,
                      std::chrono::duration<double, std::milli>(t_launch - t0).count(),
                      std::chrono::duration<double, std::milli>(t_done - t_launch).count());
-        t_prev_end = t_done;
     }
+    t_prev_end = t_done;
     /*
     DPCT1009: SYCL reports errors using exceptions and does not use error
     codes. Please replace the "get_error_string_dummy(...)" with a real
