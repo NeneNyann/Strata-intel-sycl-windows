@@ -43,7 +43,7 @@ START-HERE.bat --backend sycl --prebuilt dist
 
 ## Benchmark
 
-Measured on **2026-10-09** with the following local configuration. These results use full RAM expert
+Measured on **2026-10-12** with the following local configuration. These results use full RAM expert
 residency and fixed expert-cache budgets and prefill chunks. Only the current build was run in this test.
 
 ### Test environment
@@ -100,10 +100,10 @@ Startup/model loading is excluded. These are short-prompt measurements at two co
 
 | Case | Context capacity | First prefill (tok/s) | First decode (tok/s) | Repeat 1 (tok/s) | Repeat 2 (tok/s) |
 |---|---:|---:|---:|---:|---:|
-| Text only | 8,192 | 219.03 | **42.57** | **43.61** | **45.16** |
-| GPU vision loaded | 8,192 | 210.56 | **39.46** | **42.06** | **42.92** |
-| Text only | 131,072 | 371.15 | **46.65** | **46.92** | **48.22** |
-| GPU vision loaded | 131,072 | 356.81 | **44.31** | **47.00** | **46.53** |
+| Text only | 8,192 | 206.38 | **42.31** | **43.36** | **45.36** |
+| GPU vision loaded | 8,192 | 211.98 | **40.54** | **42.73** | **41.25** |
+| Text only | 131,072 | 368.48 | **47.12** | **47.86** | **49.28** |
+| GPU vision loaded | 131,072 | 338.32 | **45.57** | **46.05** | **48.50** |
 
 ### Fixed allocation
 
@@ -115,10 +115,10 @@ against the table before generating. The 8K cases explicitly used `--no-prefill-
 
 | Case / capacity | VRAM expert slots | Expert VRAM (GiB) | Resident expert RAM (GiB) | Prefill chunk | Slots / GiB available to prefill loan | Loaded free VRAM (MiB) |
 |---|---:|---:|---:|---:|---|---:|
-| Text only, 8,192 | 3179 | 4.28 | 28.74 | 1024 | 0 / 0 | 1496 |
-| GPU vision loaded, 8,192 | 2358 | 3.18 | 29.84 | 1024 | 0 / 0 | 1422 |
-| Text only, 131,072 | 3780 | 5.08 | 31.50 | 8192 | 2662 / 3.56 | 776 |
-| GPU vision loaded, 131,072 | 3186 | 4.29 | 32.30 | 8192 | 2655 / 3.56 | 268 |
+| Text only, 8,192 | 3179 | 4.28 | 28.74 | 1024 | 0 / 0 | 2093 |
+| GPU vision loaded, 8,192 | 2358 | 3.18 | 29.84 | 1024 | 0 / 0 | 2029 |
+| Text only, 131,072 | 3780 | 5.08 | 31.50 | 8192 | 2662 / 3.56 | 1363 |
+| GPU vision loaded, 131,072 | 3186 | 4.29 | 32.30 | 8192 | 2655 / 3.56 | 975 |
 
 The prefill loan temporarily reuses expert-cache VRAM for prompt buffers; its GiB are part of the
 expert-cache total, not an additional permanent allocation. The 8K cases used 1024-token chunks with
@@ -126,7 +126,7 @@ their own buffers; both 128K cases used fixed 8192-token chunks and borrowed cac
 difference, along with different cache sizes, means a larger configured capacity can be faster for
 this short prompt; it does not mean longer prompts are faster.
 
-The text-only 128K cache budget leaves 776 MiB free after loading. These VRAM figures report
+The text-only 128K cache budget leaves 1363 MiB free after loading. These VRAM figures report
 allocations, not proof that WDDM keeps every allocation in dedicated physical VRAM.
 
 At 128K, INT8 KV streaming kept 20,480 cells per QSA layer in VRAM and allocated **1.55 GiB of pinned
@@ -141,12 +141,12 @@ file sizes or treated as interchangeable measurements of RAM.
 
 | Case / capacity | Engine max private (GiB) | Engine peak working set (GiB) | Vision max private (GiB) | Minimum free physical RAM during Benchy (GiB) |
 |---|---:|---:|---:|---:|
-| Text only, 8,192 | 40.19 | 54.27 | 0.00 | 24.07 |
-| GPU vision loaded, 8,192 | 40.19 | 53.97 | 1.52 | 22.14 |
-| Text only, 131,072 | 45.47 | 52.73 | 0.00 | 17.40 |
-| GPU vision loaded, 131,072 | 45.47 | 51.78 | 1.52 | 14.76 |
+| Text only, 8,192 | 40.19 | 53.51 | 0.00 | 22.24 |
+| GPU vision loaded, 8,192 | 40.19 | 54.95 | 1.52 | 23.60 |
+| Text only, 131,072 | 45.47 | 54.45 | 0.00 | 20.06 |
+| GPU vision loaded, 131,072 | 45.47 | 54.56 | 1.52 | 19.55 |
 
-Loading briefly reduced available physical RAM to 0.00 GiB; the minimum available system commit across these sessions was 7.58 GiB.
+Loading briefly reduced available physical RAM to 0.00 GiB; the minimum available system commit across these sessions was 28.26 GiB.
 The remaining RAM during decode is not evidence of a partial expert cache: loading peaks and other
 allocations need headroom, and the measured requests did not read experts from disk. These timings
 do not establish that Windows performed no paging.
@@ -154,9 +154,9 @@ do not establish that Windows performed no paging.
 | Case / capacity | Decode expert-cache hit range | MTP accepted / offered range | Two-second live peak (tok/s) |
 |---|---:|---:|---:|
 | Text only, 8,192 | 57.7–60.7% | 73.5–76.4% | 53.0 |
-| GPU vision loaded, 8,192 | 49.8–53.1% | 74.3–79.1% | 48.0 |
-| Text only, 131,072 | 62.0–66.7% | 74.8–79.3% | 55.5 |
-| GPU vision loaded, 131,072 | 57.9–61.2% | 74.8–78.8% | 54.5 |
+| GPU vision loaded, 8,192 | 49.6–52.7% | 72.2–78.2% | 49.0 |
+| Text only, 131,072 | 62.0–66.7% | 74.8–79.3% | 54.5 |
+| GPU vision loaded, 131,072 | 58.0–60.0% | 73.9–78.8% | 54.0 |
 
 All Benchy requests reached the 256-token cap (`finish=length`); none stopped early, and no generated
 12-token sequence repeated within a response. Cache swaps, PCIe work and MTP acceptance can change
@@ -171,24 +171,24 @@ This measures generation with tool definitions in the prompt, **not tool executi
 
 | Request | Output tokens | Finish | Decode (tok/s) | Prompt read time (ms) |
 |---|---:|---|---:|---:|
-| tool-first | 89 | stop | **31.70** | 4612.4 |
-| tool-repeat | 120 | stop | **35.51** | 66.3 |
+| tool-first | 149 | stop | **27.52** | 4561.7 |
+| tool-repeat | 55 | stop | **41.51** | 66.7 |
 
 ### WebUI writing
 
-The latest completed user-run WebUI writing request on 2026-10-09, on the same PC and model, with MCP tools and vision
+The latest completed user-run WebUI writing request on 2026-10-12, on the same PC and model, with MCP tools and vision
 turned off. Context capacity was 131,072; the actual prompt was short and reused no tokens.
 
 | Input tokens | Generated tokens | Prompt time | Prefill (tok/s) | Decode time | Decode (tok/s) |
 |---:|---:|---:|---:|---:|---:|
-| 28 | 5,871 | 0.491 s | 57.0 | 162.197 s | **36.2** |
+| 24 | 6,006 | 1.772 s | 13.5 | 165.559 s | **36.3** |
 
 Settings: `--expert-cache 3400 --prefill 8192 --prefill-borrow --vram-reserve-mib 700`;
 INT8 KV with 20,480 resident cells, MTP spec 4 / min-p 0.5, PCIe fraction 0.37 and full pageable RAM
 expert residency. The environment settings were the same as above. The actual cache held
-3,514 slots / 4.73 GiB in VRAM and 31.86 GiB in RAM; loaded free VRAM was 477 MiB.
+3,556 slots / 4.78 GiB in VRAM and 31.80 GiB in RAM; loaded free VRAM was 1463 MiB.
 
-Expert-cache hits were 79.8%; MTP accepted 2,870 of 5,087 drafts (**56.4%**). Expert blob reads from
+Expert-cache hits were 79.7%; MTP accepted 3,082 of 5,564 drafts (**55.4%**). Expert blob reads from
 files were zero.
 
 ## Limits

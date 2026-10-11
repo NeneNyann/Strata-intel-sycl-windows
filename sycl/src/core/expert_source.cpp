@@ -57,6 +57,16 @@
 
 namespace strata::core {
 
+// The Windows port keeps its existing staging pool. If a pinned stage buffer is
+// handed to an asynchronous copy, finish that copy before the pool can recycle it.
+void FileExpertSource::note_async_read(const uint8_t* blob, void* stream) {
+    if (blob == nullptr) return;
+    std::lock_guard<std::mutex> lock(stage_mu_);
+    const auto it = stage_idx_.find(blob);
+    if (it == stage_idx_.end() || !stage_buf_[it->second].get_deleter().pinned) return;
+    strata::q_of(stream)->wait_and_throw();
+}
+
 namespace detail {
 
 bool cgroup_available_bytes(uint64_t limit, const CgroupMemoryStat& stat, uint64_t& bytes) {

@@ -149,7 +149,7 @@ private:
     int max_drafts_ = 1 << 30;
     int64_t n_vocab_ = 0;
     uint64_t vram_ = 0;
-    dpct::queue_ptr cs_ = &dpct::get_in_order_queue();
+    dpct::queue_ptr cs_ = nullptr;
     dpct::experimental::command_graph_exec_ptr prefill_exec_[9] = {};
     dpct::experimental::command_graph_exec_ptr prefill_dev_exec_[9] = {};
     int32_t* pf_dev_ = nullptr;   ///< E-4: a prompt's rows' token / step / position records, uploaded at once

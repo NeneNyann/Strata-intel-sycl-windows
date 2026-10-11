@@ -22,6 +22,7 @@
 #endif
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/iq_kernels.hpp"
+#include "strata/kernels/iq_dequant_expert.hpp"
 #include "strata/kernels/native_mmvq.hpp"
 
 #include <algorithm>
@@ -588,6 +589,43 @@ void check_q8_1_finite(dpct::queue_ptr s, std::mt19937 &rng) {
 
 }  // namespace
 
+// The fused prefill dequantizer must reproduce both established launchers,
+// including interleaved gate/up rows and every element of the down matrix.
+void check_expert_dequant(dpct::queue_ptr s, std::mt19937& rng) {
+    constexpr int64_t N = 2560, F = 640;
+    for (int gt : {16, 17, 18, 21, 22, 23, 29, 42}) {
+        for (int dt : {20, 42}) {
+            auto gate = random_rows(gt, F, N, rng);
+            auto up = random_rows(gt, F, N, rng);
+            auto down = random_rows(dt, N, F, rng);
+            auto* dg = dalloc<uint8_t>(gate.size());
+            auto* du = dalloc<uint8_t>(up.size());
+            auto* dd = dalloc<uint8_t>(down.size());
+            s->memcpy(dg, gate.data(), gate.size());
+            s->memcpy(du, up.data(), up.size());
+            s->memcpy(dd, down.data(), down.size());
+            auto* old_gu = dalloc<uint16_t>(2 * F * N);
+            auto* old_d = dalloc<uint16_t>(F * N);
+            auto* new_gu = dalloc<uint16_t>(2 * F * N);
+            auto* new_d = dalloc<uint16_t>(F * N);
+            k::iq_dequant_gu_f16(gt, dg, du, F, N, old_gu, s);
+            k::iq_dequant_f16(dt, dd, F * N, old_d, s);
+            k::iq_dequant_expert_f16(gt, dt, dg, du, dd, F, N, new_gu, new_d, s);
+            std::vector<uint16_t> a(3 * F * N), b(a.size());
+            s->memcpy(a.data(), old_gu, 2 * F * N * 2);
+            s->memcpy(a.data() + 2 * F * N, old_d, F * N * 2);
+            s->memcpy(b.data(), new_gu, 2 * F * N * 2);
+            s->memcpy(b.data() + 2 * F * N, new_d, F * N * 2);
+            s->wait_and_throw();
+            const bool same = a == b;
+            std::printf("fused dequant %s/%s: %s\n", name_of(gt), name_of(dt), same ? "bitwise identical" : "FAIL");
+            g_fail += !same;
+            for (void* p : {(void*)dg, (void*)du, (void*)dd, (void*)old_gu, (void*)old_d, (void*)new_gu, (void*)new_d})
+                sycl::free(p, *s);
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     const bool do_bench = argc > 1 && std::string(argv[1]) == "--bench";
     dpct::queue_ptr s;
@@ -603,6 +641,7 @@ int main(int argc, char** argv) {
         check_grouped(gu, 23, 1024, 512, s, rng);                           // IQ4_XS down needs n_ff % 256 == 0
     }
     check_q8_1_finite(s, rng);
+    check_expert_dequant(s, rng);
     if (do_bench) bench(s, rng);
     std::printf("iq_multi_parity: %d failures\n", g_fail);
     dpct::get_current_device().destroy_queue(s);
