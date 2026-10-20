@@ -51,6 +51,9 @@ struct Pending {
 };
 }
 
+// The preserved Windows verifier does not use the experimental HC Q8 projections.
+bool NativeDense::hc_q8_requested() { return false; }
+
 bool NativeDense::served_names(const std::vector<std::string>& shards, bool include_ple_key,
                                std::set<std::string>& out, std::string& err) {
     try {
@@ -109,7 +112,7 @@ bool NativeDense::load(const std::vector<std::string> &shards,
             const auto* number = gguf.get("split.no");
             const auto* tensors = gguf.get("split.tensors.count");
             if (gguf.get("general.architecture")) {
-                err = strata::check_architecture(gguf);
+                err = strata::check_engine_architecture(gguf);
                 if (!err.empty()) return false;
                 have_architecture = true;
                 if (count && number && tensors && number->u == 0 && count->u > 1) {

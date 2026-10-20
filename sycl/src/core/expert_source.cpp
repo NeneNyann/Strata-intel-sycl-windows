@@ -1228,6 +1228,24 @@ bool FileExpertSource::read_direct(const Fill* fills, size_t n) const {
 #endif
 }
 
+// Keep the synchronous Windows file-tier contract. The new Linux cold-read overlap has no outstanding jobs here.
+int FileExpertSource::blob_parts(int64_t layer, int64_t expert, BlobPart* out) {
+    return ExpertSource::blob_parts(layer, expert, out);
+}
+int64_t FileExpertSource::prefetch_begin(int64_t layer, const int64_t* experts, int64_t n, uint8_t* pending) {
+    return ExpertSource::prefetch_begin(layer, experts, n, pending);
+}
+int64_t FileExpertSource::wait_landed(int64_t layer, const int64_t* experts, int64_t n, uint8_t* state) {
+    return ExpertSource::wait_landed(layer, experts, n, state);
+}
+void FileExpertSource::prefetch_end() {}
+bool FileExpertSource::zc_roles(int64_t layer, int64_t expert, const uint8_t** p) {
+    return ExpertSource::zc_roles(layer, expert, p);
+}
+void FileExpertSource::warm_scored(int64_t layer, const int64_t* experts, const float* conf, int64_t n, int ahead) {
+    ExpertSource::warm_scored(layer, experts, conf, n, ahead);
+}
+
 void FileExpertSource::warm(int64_t layer, const int64_t* experts, int64_t n) {
     if (role_ptr_.empty() || n <= 0 || layer < 0 || layer >= n_layers_) return;
     uint32_t stamp;
@@ -1909,7 +1927,8 @@ bool FileExpertSource::has_resident(int64_t layer, int64_t expert) const {
     return index < complement_offsets_.size() && complement_offsets_[index] != kNoComplement;
 }
 
-bool FileExpertSource::reserve_exchanges(int64_t n, std::string &err) try {
+bool FileExpertSource::reserve_exchanges(int64_t n, std::string &err, int64_t bounce) try {
+    if (bounce != 0) { err = "SYCL: rotating exchange bounce buffers are not supported by this Windows path"; return false; }
     err.clear();
     if (n <= xstage_cap_) return true;
     if (!staged_.empty()) { err = "FileExpertSource: exchange buffers are in use"; return false; }
@@ -1956,7 +1975,8 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
-uint8_t* FileExpertSource::exchange_buffer(int64_t q) const {
+uint8_t* FileExpertSource::exchange_buffer(int64_t q, int64_t layer) const {
+    if (layer >= n_layers_) return nullptr;   // this port keeps every buffer at the largest layer's blob size
     if (xstage_ == nullptr || q < 0 || q >= xstage_cap_) return nullptr;
     return xstage_ + (size_t) q * (size_t) xstage_blob_;
 }
@@ -2007,6 +2027,14 @@ const uint8_t* FileExpertSource::blob_stable(int64_t layer, int64_t expert) {
 const uint8_t* FileExpertSource::resident_blob(size_t index) const {
     if (exchange_storage_.active()) return exchange_storage_.resident(index).host;
     return detail::cache_complement_blob_or_fallback(index, complement_offsets_, complement_host_, nullptr);
+}
+
+const uint8_t* FileExpertSource::resident_blob(int64_t layer, int64_t expert) const {
+    if (!complement_ready_ || complement_host_ == nullptr || layer < 0 || expert < 0 || layer >= n_layers_ ||
+        expert >= n_expert_) return nullptr;
+    const size_t index = (size_t) layer * (size_t) n_expert_ + (size_t) expert;
+    if (index >= complement_offsets_.size()) return nullptr;
+    return resident_blob(index);   // through the rotation's ownership table when STRATA_EXCHANGE_ROTATE is on
 }
 
 bool FileExpertSource::advise_pairs(const std::pair<int32_t, int32_t>* pairs, int64_t n) const {
@@ -2820,7 +2848,7 @@ bool check_experts_gguf(const std::string& gguf, const strata::kernels::cpu::Exp
 // #255, gopinath87607).  The caller checks the spans first (check_experts_gguf).
 // `unbuffered` (Windows, experts_unbuffered): each chunk's 4 KiB-aligned window is read with FILE_FLAG_NO_BUFFERING into
 // an aligned buffer and scattered into the blobs - no copy through the file cache when the drive is read anyway.
-LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
+static LoadStats load_experts_gguf_packed(const std::string& gguf, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
                             int threads, bool unbuffered, const std::atomic<int>* ready) {
     // `ready`: layer l is written only once *ready > l + 1 (a PinnedArena registering its slices meanwhile; the next
     // slice too, since its registration starts on the page that may hold this layer's tail)
@@ -2984,6 +3012,20 @@ LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata:
 }
 
 ArenaExpertSource::~ArenaExpertSource() { close(); }
+
+// The Windows port keeps the packed expert arena; padded pin-by-need is not enabled here.
+LoadStats load_experts_gguf(const std::string& gguf, uint8_t* dst, const strata::kernels::cpu::ExpertLayout& lay,
+                          int threads, bool unbuffered, const std::atomic<int>* ready, const PadMap* pad) {
+    if (pad != nullptr) {
+        LoadStats st;
+        st.ok = false;
+        st.error = "SYCL: padded expert arenas are not supported";
+        return st;
+    }
+    return load_experts_gguf_packed(gguf, dst, lay, threads, unbuffered, ready);
+}
+
+bool ArenaExpertSource::pcie_layer(int64_t layer) const { return device_alias(layer, 0) != nullptr; }
 
 bool ArenaExpertSource::open(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int threads,
                              std::string& err, uint64_t max_pinned_bytes,

@@ -4,6 +4,10 @@
 #include "strata/core/conversation_snapshot.hpp"
 #include "conversation_checked.hpp"
 
+#include "strata/core/progress.hpp"
+#include <chrono>
+#include <cstdlib>
+#include <thread>
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -12,6 +16,49 @@ namespace strata::core {
 namespace {
 using conversation_detail::add;
 using conversation_detail::product;
+
+inline long test_slow_copy_us() {
+    static const long v = [] { const char* e = std::getenv("STRATA_TEST_SLOW_COPY_US"); return e ? std::atol(e) : 0L; }();
+    return v;
+}
+
+template<class T>
+inline std::vector<T> copy_beating(const std::vector<T>& src) {
+    std::vector<T> out;
+    out.reserve(src.size());
+    const size_t step = std::max<size_t>(1, ((size_t) 1 << 20) / sizeof(T));
+    for (size_t at = 0; at < src.size(); at += step) {
+        out.insert(out.end(), src.begin() + (std::ptrdiff_t) at,
+                   src.begin() + (std::ptrdiff_t) std::min(src.size(), at + step));
+        if (const long us = test_slow_copy_us(); us > 0) std::this_thread::sleep_for(std::chrono::microseconds(us));
+        core::progress_beat();
+    }
+    return out;
+}
+
+inline ConversationCheckpoint copy_checkpoint_beating(const ConversationCheckpoint& c) {
+    ConversationCheckpoint o;
+    o.ids = copy_beating(c.ids);
+    o.imgs = copy_beating(c.imgs);
+    o.gdn = copy_beating(c.gdn);
+    o.ple = copy_beating(c.ple);
+    o.tails = copy_beating(c.tails);
+    o.dead = copy_beating(c.dead);
+    o.block_pos = copy_beating(c.block_pos);
+    o.used = c.used;
+    o.pinned = c.pinned;
+    o.stage_parts.reserve(c.stage_parts.size());
+    for (const auto& part : c.stage_parts) o.stage_parts.push_back(copy_checkpoint_beating(part));
+    return o;
+}
+
+inline std::vector<ConversationCheckpoint> copy_checkpoints_beating(const std::vector<ConversationCheckpoint>& cs) {
+    std::vector<ConversationCheckpoint> out;
+    out.reserve(cs.size());
+    for (const auto& c : cs) out.push_back(copy_checkpoint_beating(c));
+    return out;
+}
+
 
 std::array<int64_t, 18> geometry_key(const ModelGeometry& g) {
     return {g.n_embd, g.n_layers, g.qsa_interval, g.ssm_state_size, g.ssm_k_heads,
@@ -42,6 +89,7 @@ bool copy(void* dst, const void* src, size_t bytes, std::string& error) {
     if (!dst || !src) return fail(error, "missing running-state buffer");
     try {
         dpct::get_in_order_queue().memcpy(dst, src, bytes).wait();
+        progress_beat();
         return true;
     } catch (sycl::exception const& e) {
         error = std::string("conversation snapshot running-state copy: ") + e.what();
@@ -266,7 +314,7 @@ bool conversation_snapshot_save(SavedConversation& image, const ConversationView
     captured.geometry = geometry_key(g);
     captured.layer_lo = ss.layer_lo; captured.layer_hi = ss.layer_hi;
     captured.live.ids = view.ids; captured.live.imgs = view.images;
-    captured.cvec = view.cvec; captured.checkpoints = view.checkpoints;
+    captured.cvec = view.cvec; captured.checkpoints = copy_checkpoints_beating(view.checkpoints);
     const int64_t unchanged = reuse.kv.empty() ? 0 : reuse.unchanged_tokens;
     captured.kv = std::move(reuse.kv);
     const size_t layers = owned_qsa(ss);

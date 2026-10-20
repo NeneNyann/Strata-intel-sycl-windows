@@ -8,7 +8,7 @@
 
 ## 安装
 
-需要 Windows 10/11、独立 Intel Arc 显卡、最新 Intel 显卡驱动和支持 AVX2 的 CPU。按[模型大小](docs/MODELS.md#pick-by-ram)准备内存与磁盘空间；测试机器使用 64 GB 内存。
+需要 Windows 10/11、独立 Intel Arc 显卡、最新 Intel 显卡驱动和支持 AVX2 的 CPU。按[模型大小](docs/MODELS.md#pick-by-memory)准备内存与磁盘空间；测试机器使用 64 GB 内存。
 
 1. [下载本仓库](https://github.com/NeneNyann/Strata-intel-sycl-windows/archive/refs/heads/main.zip)并解压，或 clone 本仓库。
 2. 在项目目录运行：
@@ -31,20 +31,20 @@ MCP 连接配置见 [MCP 工具说明](docs/DETAILS.md#tools-from-mcp-servers)�
 
 ## 性能
 
-2026-10-12 实测：Arc B580 12 GB、Core i7-14700K、64 GB RAM，Qwen3.8-Flash-Next GSQ-RCO IQ2_XS，
+2026-10-20 实测：Arc B580 12 GB、Core i7-14700K、64 GB RAM，Qwen3.8-Flash-Next GSQ-RCO IQ2_XS，
 INT8 KV、MTP spec 4。完整 RAM 专家驻留、固定专家缓存预算与 prefill chunk、全核，无 RAM 预算上限。
 Benchy v1：2,185 输入、256 输出，greedy。
 
 | 场景 | 上下文容量 | 首次 Decode | 重复 Decode |
 |---|---:|---:|---:|
-| 纯文本 | 8K | **42.31 tok/s** | **43.36–45.36 tok/s** |
-| GPU 图像编码器驻留 | 8K | **40.54 tok/s** | **41.25–42.73 tok/s** |
-| 纯文本 | 128K | **47.12 tok/s** | **47.86–49.28 tok/s** |
-| GPU 图像编码器驻留 | 128K | **45.57 tok/s** | **46.05–48.50 tok/s** |
+| 纯文本 | 8K | **40.95 tok/s** | **42.77–43.39 tok/s** |
+| GPU 图像编码器驻留 | 8K | **37.26 tok/s** | **41.19–41.71 tok/s** |
+| 纯文本 | 128K | **44.33 tok/s** | **45.55–49.02 tok/s** |
+| GPU 图像编码器驻留 | 128K | **42.41 tok/s** | **45.10–46.50 tok/s** |
 
 128K 表示配置容量，上述测试使用短提示词；重复请求复用 2,182 个输入 token。
 WebUI 写作实测：128K 上下文容量，关闭 MCP tools 和 vision，24-token 提示词生成
-6,006 token，平均 decode **36.3 tok/s**。
+5,733 token，平均 decode **36.3 tok/s**。
 
 完整参数、实际专家 RAM/VRAM、prefill 分配及工具提示词结果见 [Windows SYCL benchmark](docs/SYCL_WINDOWS.md#benchmark)。
 

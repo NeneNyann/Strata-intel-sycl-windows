@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace strata::kernels {
 
@@ -111,5 +112,19 @@ bool native_mmvq_supported(int ggml_type) noexcept;
 std::size_t native_mmvq_weight_bytes(int ggml_type, int n_in, int n_out);
 void native_mmvq(int ggml_type, const void* weights, const void* x_q8_1, float* y,
                  int n_in, int n_out, int ncols, void* stream);
+
+/// STRATA_Q6_PLANAR (SYCL port; =0 turns it off): the Q6_K output heads stored as planes - ql (128 B), qh (64 B), the scales
+/// (16 B, each lane's pair adjacent), d (2 B) of every 210-byte block - so the decode kernel's weight loads are single
+/// aligned 16-byte loads (the GGUF layout is 2-byte aligned: two loads and a shift per run). Same bytes, ~14% faster, outputs
+/// bitwise equal. native_q6_k_planar_adopt converts a GGUF-layout matrix (the old allocation is freed, the returned pointer
+/// replaces it and is what native_q6_k_mmvq is called with; free it like the old one, after native_q6_k_unpack);
+/// native_q6_k_planar_gather takes rows of a planar matrix as a new planar one (nullptr: `planar` is not one).
+bool native_q6_k_planar_enabled();
+bool native_q6_k_is_planar(const void* weights);
+void* native_q6_k_planar_adopt(void* weights, int n_in, int n_out, const char* what);
+void* native_q6_k_planar_gather(const void* planar, int n_in, const int32_t* rows_dev, int64_t n_sel, const char* what);
+
+
+void native_q6_k_unpack(const void* weights);
 
 } // namespace strata::kernels

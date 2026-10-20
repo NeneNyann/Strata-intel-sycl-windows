@@ -438,8 +438,10 @@ catch (sycl::exception const &exc) {
   std::exit(1);
 }
 
+bool Gemm::bf16_converts_x() const { return false; }
+
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
-                float beta, int64_t ldx) {
+                float beta, int64_t ldx, bool /*x_f16*/) {
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     const float alpha = 1.0f;

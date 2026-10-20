@@ -224,6 +224,9 @@ def install(argv) -> int:
             if arg.startswith(name + "="):
                 return arg.split("=", 1)[1]
         return None
+    if option("--family") in ("qwen36", "nvfp4", "gyro"):
+        S.fail("Qwen3.6, NVFP4 and Gyro are not supported by the Windows SYCL engine",
+               "choose a Flash-Next model; docs/SYCL_WINDOWS.md")
     if option("--kv") == "k8v4":
         if option("--kv-streaming") == "on":
             S.fail("the SYCL engine does not support k8v4 KV streaming", "use --kv-streaming off or --kv int8")
@@ -257,6 +260,8 @@ def install(argv) -> int:
             real_fail("the Windows Intel release engine requires an AVX2 CPU")
         real_fail(message, *details)
     S.say, S.fail = say_intel, fail_intel
+    model_families = S.menu_families
+    S.menu_families = lambda hip: [f for f in model_families(hip) if f not in S.OWN_PATH_FAMILIES and f != "gyro"]
     S.gpus = lambda *a, **k: []
     S.amd_gpus = lambda *a, **k: cards
     S.amd_problem = lambda g: None

@@ -11,7 +11,7 @@ Primarily tested on an **Arc B580 12 GB**. Intel support remains experimental.
 ## Install
 
 Requires Windows 10/11, a discrete Intel Arc GPU, a current Intel graphics driver and an AVX2 CPU.
-Choose a [model size](docs/MODELS.md#pick-by-ram) for your RAM and disk space; the test PC has 64 GB RAM.
+Choose a [model size](docs/MODELS.md#pick-by-memory) for your RAM and disk space; the test PC has 64 GB RAM.
 
 1. [Download this repository](https://github.com/NeneNyann/Strata-intel-sycl-windows/archive/refs/heads/main.zip)
    and extract it, or clone it.
@@ -38,20 +38,20 @@ See [MCP tools](docs/DETAILS.md#tools-from-mcp-servers) for MCP configuration an
 
 ## Performance
 
-Measured on 2026-10-12: Arc B580 12 GB, Core i7-14700K, 64 GB RAM, Qwen3.8-Flash-Next GSQ-RCO IQ2_XS,
+Measured on 2026-10-20: Arc B580 12 GB, Core i7-14700K, 64 GB RAM, Qwen3.8-Flash-Next GSQ-RCO IQ2_XS,
 INT8 KV and MTP spec 4. Full RAM expert residency, fixed expert-cache budgets and prefill chunks, all CPU cores;
 no RAM budget limit. Benchy v1: 2,185 input tokens, 256 output tokens, greedy.
 
 | Case | Context capacity | First decode | Repeated decode |
 |---|---:|---:|---:|
-| Text only | 8K | **42.31 tok/s** | **43.36–45.36 tok/s** |
-| GPU vision loaded | 8K | **40.54 tok/s** | **41.25–42.73 tok/s** |
-| Text only | 128K | **47.12 tok/s** | **47.86–49.28 tok/s** |
-| GPU vision loaded | 128K | **45.57 tok/s** | **46.05–48.50 tok/s** |
+| Text only | 8K | **40.95 tok/s** | **42.77–43.39 tok/s** |
+| GPU vision loaded | 8K | **37.26 tok/s** | **41.19–41.71 tok/s** |
+| Text only | 128K | **44.33 tok/s** | **45.55–49.02 tok/s** |
+| GPU vision loaded | 128K | **42.41 tok/s** | **45.10–46.50 tok/s** |
 
 128K is the configured capacity; these tests used short prompts. Repeats reused 2,182 input tokens.
 In a WebUI writing session with 128K context capacity, MCP tools and vision off, a 24-token prompt
-generated 6,006 tokens at **36.3 tok/s**.
+generated 5,733 tokens at **36.3 tok/s**.
 
 See [Windows SYCL benchmarks](docs/SYCL_WINDOWS.md#benchmark) for full parameters, actual expert RAM/VRAM,
 prefill allocation and tool-prompt results.

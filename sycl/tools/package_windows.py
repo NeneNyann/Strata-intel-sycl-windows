@@ -11,6 +11,7 @@ The Intel display driver is supplied by the user; no compiler is required.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -153,6 +154,25 @@ def package(build: Path, vision_build: Path, out: Path) -> Path:
             "archs": ["spir64"], "cpu_isa": "avx2", "vision": "gpu", "lib_dirs": ["oneapi/bin"],
             "compiler": roots["compiler"].resolve().name, "mkl": roots["mkl"].resolve().name}
     (stage / "BUILD.json").write_text(json.dumps(meta, indent=1), encoding="utf-8")
+    # Keep the source install's BUILD.json and add the manifest understood by the new component resolver.
+    sys.path.insert(0, str(ROOT))
+    from strata_control import engine_component as ec
+    commit = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
+    files = []
+    for p in sorted(stage.rglob("*")):
+        if p.is_file() and p.name != ec.MANIFEST:
+            digest = hashlib.sha256()
+            with p.open("rb") as stream:
+                for block in iter(lambda: stream.read(1 << 20), b""):
+                    digest.update(block)
+            files.append({"path": p.relative_to(stage).as_posix(), "bytes": p.stat().st_size,
+                          "sha256": digest.hexdigest()})
+    manifest = {"schema_version": ec.SCHEMA_VERSION, "id": ec.COMPONENT_ID, "name": ec.COMPONENT_ID,
+                "version": version, "platform": "windows-x86_64", "backend": "sycl", "archs": ["spir64"],
+                "build_id": f"{commit}-sycl-{roots['compiler'].resolve().name}", "entrypoint": "strata.exe",
+                "files": files, "signature": None}
+    (stage / ec.MANIFEST).write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
+    ec.verify(ec.read_manifest(stage), full=True)
     archive = out / ASSET
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for p in sorted(stage.rglob("*")):

@@ -4,6 +4,7 @@
 // elementwise.cu) with the same operation order, so a verify window reproduces plain decode bit for bit.
 #define DPCT_PROFILING_ENABLED
 #include <sycl/sycl.hpp>
+#include "strata/core/geometry.hpp"
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/sycl_doorbell.hpp"
@@ -22,6 +23,7 @@ namespace strata::kernels {
 namespace {
 
 constexpr int S = 128;          // GDN state size
+static_assert(S == strata::core::kCompiledGeometry.ssm_state_size, "verify_kernels is compiled for core/geometry.hpp");
 constexpr int RG = 4;
 constexpr int RPG = S / RG;
 
@@ -1136,8 +1138,10 @@ __dpct_inline__ void copy_or_zero_kernel(sycl::float4 *__restrict__ dst,
 namespace {
 const int32_t* g_mirror_res = nullptr;
 const unsigned long long* g_mirror_table = nullptr;
+long long g_mirror_entries = 0;
 }
-void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table) {
+void resident_plan_set_mirror(const int32_t* d_res, const unsigned long long* mirror_table, long long entries) {
+    g_mirror_entries = entries;
     g_mirror_res = d_res;
     g_mirror_table = mirror_table;
 }
@@ -1145,7 +1149,8 @@ void resident_plan(const int32_t* ids, int n_entries, int k, const int32_t* res_
                    const uint8_t* cache_base, const unsigned long long* slot_off, long long blob, int32_t* plan,
                    long long capx, uint32_t* skip, uint32_t ring, void* stream, uint32_t* plan_err) {
     const unsigned long long* mir = nullptr;   // SYCL port: the layer's slice of the host-mirror table, if any
-    if (g_mirror_table != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res)
+    if (g_mirror_table != nullptr && g_mirror_res != nullptr && res_layer >= g_mirror_res &&
+        (g_mirror_entries <= 0 || res_layer - g_mirror_res < g_mirror_entries))
         mir = g_mirror_table + (res_layer - g_mirror_res);
     {
         auto exp_props = sycl::ext::oneapi::experimental::properties{

@@ -2,6 +2,7 @@
 #include <sycl/sycl.hpp>
 #include <dpct/dpct.hpp>
 #include "strata/core/conversation_snapshot.hpp"
+#include "strata/core/progress.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "conversation_checked.hpp"
 
@@ -114,7 +115,7 @@ bool transfer(void *dst, const void *src, size_t n, std::string &error) try {
     // Default handles both device allocations and device-mapped host pool aliases.
     const dpct::err0 e =
         DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(dst, src, n).wait());
-    if (e == 0) return true;
+    if (e == 0) { progress_beat(); return true; }
     /*
     DPCT1009: SYCL reports errors using exceptions and does not use error
     codes. Please replace the "get_error_string_dummy(...)" with a real

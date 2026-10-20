@@ -295,6 +295,14 @@ class WhatARefusalDoesToTheCaller(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         (Path(self.tmp.name) / "engine").mkdir(parents=True, exist_ok=True)
+        (Path(self.tmp.name) / "CMakeLists.txt").write_text(
+            (ROOT / "CMakeLists.txt").read_text(encoding="utf-8"), encoding="utf-8")
+        root = mock.patch.object(setup, "ROOT", Path(self.tmp.name))
+        root.start()
+        self.addCleanup(root.stop)
+        network = mock.patch.object(setup.urllib.request, "urlopen", return_value=io.BytesIO())
+        network.start()
+        self.addCleanup(network.stop)
 
     def fake_download(self, url, dst, what=None):
         with zipfile.ZipFile(dst, "w") as z:
