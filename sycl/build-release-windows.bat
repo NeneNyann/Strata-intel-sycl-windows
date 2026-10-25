@@ -34,7 +34,7 @@ if not defined STRATA_GGML_DIR set "STRATA_GGML_DIR=%BUILD_DIR%\_deps\strata_lla
 cmake -S "%STRATA_SRC%\tools\vision" -B "%VISION_BUILD_DIR%" -G Ninja ^
     -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icx -DCMAKE_BUILD_TYPE=Release ^
     -DSTRATA_PORTABLE=ON -DLLAMA_DIR="%STRATA_GGML_DIR%" ^
-    -DSTRATA_VISION_CUDA=OFF -DGGML_SYCL=ON -DGGML_SYCL_F16=ON -DGGML_OPENMP=OFF
+    -DSTRATA_VISION_CUDA=OFF -DSTRATA_VISION_SYCL=ON -DGGML_SYCL=ON -DGGML_SYCL_F16=ON -DGGML_OPENMP=OFF
 if not "%errorlevel%"=="0" exit /b %errorlevel%
 cmake --build "%VISION_BUILD_DIR%" --target strata-vision --parallel 4
 if not "%errorlevel%"=="0" exit /b %errorlevel%

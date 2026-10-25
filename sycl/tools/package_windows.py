@@ -76,7 +76,7 @@ def package(build: Path, vision_build: Path, out: Path) -> Path:
     allowed = set(re.findall(r"<installdir>/bin/([^\s]+\.dll)",
                              compiler_redist.read_text(encoding="utf-8-sig"), re.I))
     allowed = {x.lower() for x in allowed}
-    programs = [build / "strata.exe", build / "strata-device.exe", vision_build / "bin/strata-vision.exe"]
+    programs = [build / "strata.exe", build / "strata-device.exe", vision_build / "bin/strata-vision-sycl.exe"]
     for p in programs:
         if not p.is_file():
             raise RuntimeError(f"missing program: {p}")
@@ -116,7 +116,8 @@ def package(build: Path, vision_build: Path, out: Path) -> Path:
     rbin.mkdir(parents=True)
     licenses.mkdir()
     for p in programs:
-        shutil.copy2(p, stage / p.name)
+        name = "strata-vision.exe" if p.name == "strata-vision-sycl.exe" else p.name
+        shutil.copy2(p, stage / name)
     for name, p in sorted(need.items()):
         shutil.copy2(p, rbin / p.name)
         # Resolve the core SYCL runtime and adapters from the executable's own folder first.

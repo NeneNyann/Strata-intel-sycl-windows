@@ -5,7 +5,7 @@ A background thread samples once a second and keeps the last 60 readings of each
   pip package is needed: load, VRAM, temperature, power, PCIe link and throughput.  With the AMD backend (#301): the
   amdgpu driver's Linux sysfs files - load, VRAM, temperature and power.  On macOS (Metal backend): IOKit's
   IOAccelerator registry - load and VRAM; the temperature and power sensors need root (`powermetrics`), and an Apple
-  Silicon GPU sits on the die, so there is no PCIe link.
+  Silicon GPU sits on the die, so there is no PCIe link. Intel Arc on Windows uses the driver's Level Zero Sysman counters.
 - CPU, RAM, disk: `psutil` when it is installed (setup installs it); without it the CPU and RAM readings fall back to
   the OS (Windows GlobalMemoryStatusEx / GetSystemTimes, Linux /proc) and the disk rate is absent.
 Anything that cannot be read is None; nothing here can stop the server.
@@ -345,10 +345,144 @@ class _Metal:
         return out
 
 
-def gpu_reader(index=0, amd=False):
+class _Intel:
+    """Read-only Level Zero Sysman counters. A UI index never resolves ambiguous physical cards."""
+    class Core(ctypes.Structure):
+        _fields_ = [("stype", ctypes.c_uint32), ("pNext", ctypes.c_void_p),
+                    *[(n, ctypes.c_uint32) for n in ("type", "vendorId", "deviceId", "flags", "subdeviceId", "coreClockRate")],
+                    ("maxMemAllocSize", ctypes.c_uint64),
+                    *[(n, ctypes.c_uint32) for n in ("maxHardwareContexts", "maxCommandQueuePriority", "numThreadsPerEU",
+                                                    "physicalEUSimdWidth", "numEUsPerSubslice", "numSubslicesPerSlice", "numSlices")],
+                    ("timerResolution", ctypes.c_uint64), ("timestampValidBits", ctypes.c_uint32),
+                    ("kernelTimestampValidBits", ctypes.c_uint32), ("uuid", ctypes.c_uint8 * 16), ("name", ctypes.c_char * 256)]
+
+    class Properties(ctypes.Structure):
+        pass
+    Properties._fields_ = [("stype", ctypes.c_uint32), ("pNext", ctypes.c_void_p), ("core", Core),
+                          ("numSubdevices", ctypes.c_uint32),
+                          *[(n, ctypes.c_char * 64) for n in ("serial", "board", "brand", "model", "vendor", "driver")]]
+
+    class Memory(ctypes.Structure):
+        _fields_ = [("stype", ctypes.c_uint32), ("pNext", ctypes.c_void_p), ("health", ctypes.c_uint32),
+                    ("free", ctypes.c_uint64), ("size", ctypes.c_uint64)]
+
+    class Counter(ctypes.Structure):
+        _fields_ = [("value", ctypes.c_uint64), ("timestamp", ctypes.c_uint64)]
+
+    def __init__(self, index=0, name=None, device_id=None, uuid=None):
+        self.lib = self.dev = None
+        self._name = None
+        self.prev = {}
+        self.discrete_device_ids = set()
+        self.note = "Intel GPU readings are unavailable: the driver did not expose Level Zero Sysman counters"
+        if os.name != "nt":
+            return
+        try:
+            # Load from System32 only, never from a model folder or the current directory.
+            self.lib = ctypes.WinDLL(os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "ze_loader.dll"))
+            if self._fn("zesInit", ctypes.c_uint32)(0) != 0:
+                self.lib = None
+                return
+            cards = []
+            from strata_control.targets import match_intel_devices
+            for driver in self._enum("zesDriverGet"):
+                for dev in self._enum("zesDeviceGet", driver):
+                    p = self._get("zesDeviceGetProperties", dev, self.Properties, 1)
+                    if p and p.core.vendorId == 0x8086 and p.core.type == 1 and not p.core.flags & 1:
+                        cards.append({"handle": dev, "name": p.core.name.decode(errors="replace"),
+                                      "device_id": p.core.deviceId, "uuid": bytes(p.core.uuid).hex(),
+                                      "vendor_id": p.core.vendorId, "integrated": False})
+            self.discrete_device_ids = {c["device_id"] for c in cards}
+            matches = match_intel_devices(cards, device_id=device_id, name=name, uuid=uuid)
+            if len(matches) != 1:
+                if len(matches) > 1:
+                    self.note = "Intel GPU readings are unavailable: several cards match; run setup again to save the selected card's UUID"
+                return
+            self.dev, self._name = matches[0]["handle"], matches[0]["name"]
+            self._name = name or self._name
+            self.memory = self._enum("zesDeviceEnumMemoryModules", self.dev)
+            self.engines = self._enum("zesDeviceEnumEngineGroups", self.dev)
+            self.temps = self._enum("zesDeviceEnumTemperatureSensors", self.dev)
+            self.power = ctypes.c_void_p()
+            try:
+                if self._fn("zesDeviceGetCardPowerDomain", ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))(
+                        self.dev, ctypes.byref(self.power)) != 0:
+                    self.power = None
+            except (AttributeError, OSError):
+                self.power = None
+            self.note = None
+        except (AttributeError, OSError, ValueError):
+            self.dev = None
+
+    def _fn(self, name, *args):
+        f = getattr(self.lib, name)
+        f.argtypes, f.restype = list(args), ctypes.c_uint32
+        return f
+
+    def _enum(self, name, *handles):
+        try:
+            fn = self._fn(name, *([ctypes.c_void_p] * len(handles)),
+                          ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_void_p))
+            n = ctypes.c_uint32()
+            if fn(*handles, ctypes.byref(n), None) != 0 or not 0 < n.value <= 1024:
+                return []
+            values = (ctypes.c_void_p * n.value)()
+            return list(values)[:n.value] if fn(*handles, ctypes.byref(n), values) == 0 else []
+        except (AttributeError, OSError):
+            return []
+
+    def _get(self, fn, handle, typ, stype=None):
+        value = typ()
+        if stype is not None:
+            value.stype = stype
+        try:
+            if self._fn(fn, ctypes.c_void_p, ctypes.POINTER(typ))(handle, ctypes.byref(value)) == 0:
+                return value
+        except (AttributeError, OSError):
+            pass
+        return None
+
+    def _rate(self, key, sample):
+        previous = self.prev.pop(key, None)
+        if sample is None:
+            return None
+        current = (sample.value, sample.timestamp)
+        self.prev[key] = current
+        if previous and current[1] > previous[1] and current[0] >= previous[0]:
+            return (current[0] - previous[0]) / (current[1] - previous[1])
+        return None
+
+    def ok(self):
+        return self.dev is not None
+
+    def name(self):
+        return self._name
+
+    def read(self):
+        out = {}
+        mem = [v for h in self.memory if (v := self._get("zesMemoryGetState", h, self.Memory, 0x1e)) is not None
+               and v.size > 0 and v.free <= v.size]
+        if mem:
+            out["mem_total"] = sum(v.size for v in mem)
+            out["mem_used"] = sum(max(0, v.size - v.free) for v in mem)
+        busy = [v for h in self.engines if (v := self._rate(("engine", h), self._get("zesEngineGetActivity", h, self.Counter))) is not None]
+        if busy:
+            out["util"] = max(0.0, min(100.0, 100 * max(busy)))
+        temperatures = [v.value for h in self.temps
+                        if (v := self._get("zesTemperatureGetState", h, ctypes.c_double)) is not None and 0 <= v.value < 150]
+        if temperatures:
+            out["temp"] = max(temperatures)
+        if self.power:
+            out["power"] = self._rate("power", self._get("zesPowerGetEnergyCounter", self.power, self.Counter))
+        return out
+
+
+def gpu_reader(index=0, amd=False, intel=False, name=None, device_id=None, uuid=None):
     """The card's readings: NVML (NVIDIA), the amdgpu sysfs files with the AMD backend (#301), or IOKit's
     IOAccelerator registry on macOS (Metal backend).  `amd` comes first: no Mac runs the HIP backend, and the
     tests' AMD trees are read on a Mac too."""
+    if intel:
+        return _Intel(index, name, device_id, uuid)
     if amd:
         return _Amd(index)
     return _Metal(index) if sys.platform == "darwin" else _Nvml(index)
@@ -529,7 +663,7 @@ class _CpuRamFallback:
 
 # ------------------------------------------------------------------------------------------------ the sampler
 class Telemetry:
-    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False):
+    def __init__(self, extra=None, gpu_index=0, gpu_indices=None, amd=False, intel=False, gpu_name=None, gpu_device_id=None, gpu_uuid=None):
         """`extra()` -> dict of more series to record each second (the server's tok/s).  `gpu_index`: the card the
         engine runs on, numbered as nvidia-smi and NVML number them (by PCI bus); `gpu_indices`: all of them when
         the model is split across several (issue #112) - the gpu_* readings are then their total (memory, power,
@@ -539,8 +673,9 @@ class Telemetry:
         self.lock = threading.Lock()
         self.now: dict = {}
         self.hist = collections.defaultdict(lambda: collections.deque(maxlen=HISTORY))
-        idx = list(gpu_indices) if gpu_indices and len(gpu_indices) > 1 else [gpu_index]
-        self.gpus = [(i, gpu_reader(i, amd)) for i in idx]
+        idx = list(gpu_indices) if not intel and gpu_indices and len(gpu_indices) > 1 else [gpu_index]
+        self.gpus = [(i, gpu_reader(i, amd, intel=True, name=gpu_name, device_id=gpu_device_id, uuid=gpu_uuid)
+                      if intel else gpu_reader(i, amd)) for i in idx]
         self.gpus = [(i, g) for i, g in self.gpus if g.ok()] or self.gpus[:1]
         self.gpu = self.gpus[0][1]
         try:

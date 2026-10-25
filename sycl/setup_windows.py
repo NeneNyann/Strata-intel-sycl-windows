@@ -19,7 +19,8 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import setup as S
-from sycl.setup_intel import INTEL_ARC
+from strata_control.targets import (INTEL_ARC, intel_device_id, intel_name,
+                                    intel_pci_address, intel_uuid, match_intel_devices)
 
 ASSET = "strata-windows-x64-sycl.zip"
 SYCL_WINDOWS_PREBUILT_URL = "https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest/download/"
@@ -37,7 +38,17 @@ def prebuilt_bases(url_base: str) -> list[str]:
 
 def intel_gpus() -> list[dict]:
     """Known discrete Arc adapters; WMI's 32-bit AdapterRAM is not their VRAM size."""
-    script = "Get-CimInstance Win32_VideoController | Select-Object Name,PNPDeviceID,DriverVersion | ConvertTo-Json -Compress"
+    script = r"""[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+Get-CimInstance Win32_VideoController | ForEach-Object {
+    $adapter = $_
+    $bus = $address = $null
+    try {
+        $p = Get-PnpDeviceProperty -InstanceId $adapter.PNPDeviceID -KeyName DEVPKEY_Device_BusNumber,DEVPKEY_Device_Address -ErrorAction Stop
+        $bus = ($p | Where-Object KeyName -eq DEVPKEY_Device_BusNumber).Data
+        $address = ($p | Where-Object KeyName -eq DEVPKEY_Device_Address).Data
+    } catch {}
+    [PSCustomObject]@{Name=$adapter.Name; PNPDeviceID=$adapter.PNPDeviceID; DriverVersion=$adapter.DriverVersion; PciBus=$bus; PciAddress=$address}
+} | ConvertTo-Json -Compress"""
     try:
         result = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=30, check=True)
@@ -46,14 +57,30 @@ def intel_gpus() -> list[dict]:
         return []
     if isinstance(adapters, dict):
         adapters = [adapters]
+    if not isinstance(adapters, list):
+        return []
+    from strata_control.engine_component import windows_display_adapters, windows_intel_cards
+    registry = windows_display_adapters()
     found = []
     for adapter in adapters or []:
-        match = re.search(r"VEN_8086&DEV_([0-9A-F]{4})", adapter.get("PNPDeviceID", ""), re.I)
-        if not match or match.group(1).lower() not in INTEL_ARC:
+        if not isinstance(adapter, dict):
             continue
-        name, vram = INTEL_ARC[match.group(1).lower()]
-        found.append({"index": len(found), "name": f"Intel {name}", "vram_gb": vram, "arch": "xe",
-                      "driver": adapter.get("DriverVersion", ""), "vendor": "intel"})
+        match = re.search(r"VEN_8086&DEV_([0-9A-F]{4})", str(adapter.get("PNPDeviceID") or ""), re.I)
+        if not match or not windows_intel_cards([{"vendor": "8086", "device": int(match.group(1), 16),
+                                                 "name": adapter.get("Name", "")} ]):
+            continue
+        devid = match.group(1).lower()
+        name, vram = INTEL_ARC.get(devid, (None, 0.0))
+        actual = [a for a in registry if a.get("vendor") == "8086" and intel_device_id(a.get("device")) == int(devid, 16)]
+        if len(actual) == 1 and actual[0].get("vram_gb", 0) > 0:
+            vram = actual[0]["vram_gb"]
+        card = {"index": len(found), "name": f"Intel {name}" if name else adapter["Name"], "vram_gb": vram,
+                "arch": "xe", "driver": adapter.get("DriverVersion", ""), "vendor": "intel", "devid": devid,
+                "instance_id": adapter["PNPDeviceID"]}
+        bus, address = adapter.get("PciBus"), adapter.get("PciAddress")
+        if isinstance(bus, int) and isinstance(address, int) and 0 <= bus <= 255 and 0 <= address >> 16 <= 31 and 0 <= address & 0xffff <= 7:
+            card["pci_address"] = f"{bus:02x}:{address >> 16:02x}.{address & 0xffff}"
+        found.append(card)
     return found
 
 
@@ -62,6 +89,7 @@ def engine_env(eng: Path) -> dict:
     dirs = S.hip_lib_dirs(eng)  # common BUILD.json lib_dirs format
     env["PATH"] = os.pathsep.join([str(eng), *(str(d) for d in dirs), env.get("PATH", "")])
     env.pop("ONEAPI_DEVICE_SELECTOR", None)
+    env.pop("SYCL_DEVICE_FILTER", None)
     return env
 
 
@@ -69,28 +97,41 @@ def devices(eng: Path) -> list[dict]:
     try:
         result = subprocess.run([str(eng / "strata-device.exe")], env=engine_env(eng), capture_output=True,
                                 text=True, encoding="utf-8", errors="replace", timeout=60, check=True)
-        return json.loads(result.stdout)["devices"]
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as e:
+        rows = json.loads(result.stdout)["devices"]
+        if not isinstance(rows, list) or any(not isinstance(d, dict) or type(d.get("index")) is not int or d["index"] < 0 for d in rows):
+            raise ValueError("invalid device list")
+        return rows
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as e:
         S.fail(f"the Intel engine cannot enumerate Level Zero devices: {e}",
                "install a current Intel graphics driver, then run START-HERE.bat again")
 
 
 def normalized_name(name: str) -> str:
-    return re.sub(r"[^a-z0-9]", "", name.lower().replace("(r)", "").replace("(tm)", "").replace("graphics", ""))
+    return intel_name(name)
 
 
 def select_device(eng: Path, card: dict) -> dict:
-    name = normalized_name(card["name"])
-    matches = [d for d in devices(eng) if not d.get("integrated") and name in normalized_name(d["name"])]
+    matches = match_intel_devices(devices(eng), device_id=card.get("devid"), name=card["name"],
+                                  pci_address=card.get("pci_address"))
     if not matches:
         S.fail(f"{card['name']} is not exposed through Level Zero", "check the Intel graphics driver")
-    # Same-name cards are offered in WMI order; retain their occurrence when possible.
-    peers = [g for g in intel_gpus() if g["name"] == card["name"]]
-    rank = next((i for i, g in enumerate(peers) if g["index"] == card["index"]), 0)
-    if rank >= len(matches):
-        S.fail("the selected Intel adapter is missing from Level Zero")
-    d = matches[rank]
-    return {**card, "sycl_index": d["index"], "vram_gb": d["memory_bytes"] / 2**30}
+    peers = [g for g in intel_gpus() if (g.get("devid") == card.get("devid") if card.get("devid")
+                                        else intel_name(g["name"]) == intel_name(card["name"]))]
+    if len(matches) != 1 or (len(peers) > 1 and not (intel_pci_address(card.get("pci_address"))
+                                                   and intel_pci_address(matches[0].get("pci_address")))):
+        S.fail("the selected Intel adapter cannot be identified uniquely",
+               "use the current Windows SYCL engine package so setup can match each card's PCI address")
+    d = matches[0]
+    if type(d.get("memory_bytes")) is not int or d["memory_bytes"] <= 0:
+        S.fail("the Intel engine did not report this card's VRAM size", "update the Intel graphics driver")
+    if d.get("usm_host") is False or d.get("usm_device") is False:
+        S.fail("this Intel adapter does not expose the memory capabilities the SYCL engine needs",
+               "update the Intel graphics driver")
+    selected = {**card, "sycl_index": d["index"], "vram_gb": d["memory_bytes"] / 2**30,
+                "uuid": intel_uuid(d.get("uuid")), "pci_address": d.get("pci_address") or card.get("pci_address")}
+    if isinstance(d.get("alchemist"), bool):
+        selected["alchemist"] = d["alchemist"]
+    return selected
 
 
 def metadata(eng: Path) -> dict:
@@ -152,12 +193,35 @@ def get_prebuilt(url_base, gpu, updating=False) -> Path | None:
     return eng
 
 
-def vision_choice(asked):
-    if asked in ("no", "none"):
+def vision_choice(asked, vram_gb: float = 0.0):
+    if asked in ("no", "none", "off"):
         return "none"
     if asked in ("yes", "gpu", "cpu"):
         return "gpu" if asked == "yes" else asked
     return "gpu" if S.ask("Do you want images?", ["y", "n"], "n", YES) == "y" else "none"
+
+
+def vision_reader(eng: Path, vision: str, gpu: dict):
+    """The Windows SYCL reader runs on either device: --gpu selects Intel, otherwise CPU.
+
+    Its release name stays strata-vision.exe. The shared AMD selector would call it
+    CPU-only because it looks for strata-vision-hip.exe instead.
+    """
+    from strata_control import vision_reader as VR
+    exe = eng / "strata-vision.exe"
+    if vision in ("no", "none", "off", ""):
+        reader = VR.Reader("none")
+    elif not exe.is_file():
+        reader = VR.Reader("none", note="this engine has no picture reader: pictures off")
+    elif vision == "cpu":
+        reader = VR.Reader("cpu", exe)
+    elif metadata(eng).get("vision") == "gpu":
+        reader = VR.Reader("gpu", exe, exe)
+    else:
+        reader = VR.Reader("cpu", exe, note="this engine has only the CPU picture reader")
+    if reader.note:
+        S.warn(reader.note)
+    return reader.mode, reader
 
 
 def to_native(cfg: dict, card: dict) -> dict:
@@ -170,8 +234,21 @@ def to_native(cfg: dict, card: dict) -> dict:
     env.pop("STRATA_HIPBLASLT_TUNING", None)
     env.update({"ONEAPI_DEVICE_SELECTOR": f"level_zero:{card['sycl_index']}",
                 "STRATA_RESIDENT_PIN": "0", "STRATA_VERIFY_DEVICE_PLAN": "1"})
+    env.pop("SYCL_DEVICE_FILTER", None)
+    if card.get("alchemist", bool(re.fullmatch(r"arc(?:pro)?a\d{2,3}m?", intel_name(card["name"])))):
+        for key in ("IGC_EnableDPEmulation", "OverrideDefaultFP64Settings", "NEOReadDebugKeys"):
+            env.setdefault(key, "1")
     out["env"] = env
     out["gpu"] = card["index"]
+    out["gpu_name"] = card["name"]
+    if card.get("devid"):
+        out["gpu_device_id"] = card["devid"]
+    for key, value in (("gpu_uuid", card.get("uuid")), ("gpu_instance_id", card.get("instance_id")),
+                       ("gpu_pci_address", card.get("pci_address"))):
+        if value:
+            out[key] = value
+        else:
+            out.pop(key, None)
     return out
 
 
@@ -186,8 +263,22 @@ def update_selected_gpu(cfg_path: Path, cfg: dict, gpu=None) -> dict:
             S.fail("native Windows SYCL currently supports one selected GPU")
         selected = selected[0]
     cards = intel_gpus()
-    card = next((g for g in cards if g["index"] == selected), None) if selected is not None else \
-        max(cards, key=lambda g: g["vram_gb"], default=None)
+    if gpu is not None:
+        card = next((g for g in cards if str(g["index"]) == str(selected)), None)
+    elif cfg.get("gpu_instance_id"):
+        card = next((g for g in cards if g.get("instance_id", "").lower() == cfg["gpu_instance_id"].lower()), None)
+    else:
+        matches = [g for g in cards if not cfg.get("gpu_device_id") or
+                   intel_device_id(g.get("devid")) == intel_device_id(cfg["gpu_device_id"])]
+        if cfg.get("gpu_uuid"):
+            target = match_intel_devices(devices(Path(cfg["exe"]).parent), uuid=cfg["gpu_uuid"])
+            matches = [g for g in matches if len(target) == 1 and len(match_intel_devices(
+                target, device_id=g.get("devid"), name=g["name"], pci_address=g.get("pci_address"))) == 1]
+        if cfg.get("gpu_name") and not cfg.get("gpu_device_id"):
+            matches = [g for g in matches if intel_name(g["name"]) == intel_name(cfg["gpu_name"])]
+        if not any(cfg.get(k) for k in ("gpu_uuid", "gpu_device_id", "gpu_name")) and selected is not None:
+            matches = [g for g in matches if str(g["index"]) == str(selected)] if len(cards) == 1 else []
+        card = matches[0] if len(matches) == 1 else None
     if card is None:
         S.fail("the configured Intel Arc was not found", "use START-HERE.bat --setup --backend sycl to select it again")
     cfg = to_native(cfg, select_device(Path(cfg["exe"]).parent, card))
@@ -266,6 +357,7 @@ def install(argv) -> int:
     S.amd_gpus = lambda *a, **k: cards
     S.amd_problem = lambda g: None
     S.hip_vision = vision_choice
+    S.hip_reader = vision_reader
     S.get_prebuilt_hip = get_prebuilt
     S.hipblaslt_table = lambda *a, **k: None
     chosen = {}
