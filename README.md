@@ -38,24 +38,24 @@ See [MCP tools](docs/DETAILS.md#tools-from-mcp-servers) for MCP configuration an
 
 ## Performance
 
-Measured on 2026-10-25 with engine 0.1.49.2: Arc B580 12 GB, Core i7-14700K, 64 GB DDR4-3600 CL16
+Measured on 2026-10-30 with engine 0.1.54: Arc B580 12 GB, Core i7-14700K, 64 GB DDR4-3600 CL16
 (16-20-20-38, tRC 58, CR 1T), Qwen3.8-Flash-Next GSQ-RCO IQ2_XS,
 INT8 KV and MTP spec 4. Full RAM expert residency, fixed expert-cache budgets and prefill chunks, all CPU cores;
 no RAM budget limit. Benchy v1: 2,185 input tokens, 256 output tokens, greedy.
 
 | Case | Context capacity | First decode | Repeated decode |
 |---|---:|---:|---:|
-| Text only | 8K | **29.82 tok/s** | **46.49–47.49 tok/s** |
-| GPU vision loaded | 8K | **32.08 tok/s** | **41.50–43.20 tok/s** |
-| Text only | 128K | **46.09 tok/s** | **48.28–49.49 tok/s** |
-| GPU vision loaded | 128K | **44.47 tok/s** | **46.21–49.02 tok/s** |
+| Text only | 8K | **42.16 tok/s** | **42.86–46.26 tok/s** |
+| GPU vision loaded | 8K | **39.18 tok/s** | **42.70–42.97 tok/s** |
+| Text only | 128K | **46.30 tok/s** | **47.56–48.89 tok/s** |
+| GPU vision loaded | 128K | **42.23 tok/s** | **45.57–48.47 tok/s** |
 
 128K is the configured capacity; these tests used short prompts. Repeats reused 2,182 input tokens.
 In a WebUI writing session with 128K context capacity, MCP tools and vision off, a 24-token prompt
-generated 5,764 tokens at **36.4 tok/s**.
+generated 7,144 tokens at **38.2 tok/s**.
 
-`tools/strata_bench.py` (64K, GPU vision loaded, three runs, medians): short-chat decode **36.9 tok/s**,
-4K / 16K prefill **731.9 / 900.1 tok/s**, agent TTFT **6.28 s**.
+`tools/strata_bench.py` (64K, GPU vision loaded, three runs, medians): short-chat decode **37.4 tok/s**,
+4K / 16K prefill **725.6 / 898.7 tok/s**, agent TTFT **6.15 s**.
 
 See [Windows SYCL benchmarks](docs/SYCL_WINDOWS.md#benchmark) for full parameters, actual expert RAM/VRAM,
 prefill allocation and tool-prompt results.
@@ -92,6 +92,6 @@ The previous READMEs and translations are retained for reference:
 
 [English](README.upstream.md) · [简体中文](README.upstream.zh-CN.md) · [日本語](README.upstream.ja.md) ·
 [Deutsch](README.upstream.de.md) · [Français](README.upstream.fr.md) · [Español](README.upstream.es.md) ·
-[Português](README.upstream.pt-BR.md)
+[Português](README.upstream.pt-BR.md) · [Polski](README.upstream.pl.md)
 
 Uses the original project's [MIT License](LICENSE).

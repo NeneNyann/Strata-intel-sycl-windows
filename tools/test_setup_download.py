@@ -31,14 +31,16 @@ import strata_mcp  # noqa: E402
 CHUNK = 64 << 10                                       # the tests' piece size (setup uses 32 MiB)
 DATA = bytes((i * 7 + (i >> 8)) & 0xFF for i in range(CHUNK * 40 + 12345))       # 40 whole pieces and a short last one
 NAME = "t.gguf"
+REAL_SLEEP = time.sleep     # the fake CDN must still be slow when small_pieces patches setup.time.sleep
 
 
 class Server:
     """A threaded HTTP server for one file.  `faults(path, start, end, nth)` may answer a request with an error."""
 
-    def __init__(self, data=DATA, ranges=True, length=True, redirect=False, delay=0.002, faults=None):
+    def __init__(self, data=DATA, ranges=True, length=True, redirect=False, delay=0.002, faults=None, real_delay=False):
         self.data, self.ranges, self.length, self.redirect, self.delay = data, ranges, length, redirect, delay
         self.faults = faults
+        self.real_delay = real_delay
         self.lock = threading.Lock()
         self.gets, self.heads, self.redirects = [], 0, 0           # gets: (start, end) of every ranged GET
         self.active = self.max_active = 0
@@ -125,9 +127,9 @@ class Server:
                     if cut is not None and i >= cut:
                         h.connection.shutdown(2)           # the connection drops in the middle of the body
                         return
-                    h.wfile.write(body[i:i + 16384])
                     if self.delay:
-                        time.sleep(self.delay)
+                        (REAL_SLEEP if self.real_delay else time.sleep)(self.delay)
+                    h.wfile.write(body[i:i + 16384])
             except OSError:
                 pass
         finally:
@@ -306,7 +308,7 @@ class Resume(unittest.TestCase):
             "setup.file_pin = lambda u: pin\n"
             "setup.download(sys.argv[1], __import__('pathlib').Path(sys.argv[2]) / %r, 'the model')\n"
             % (str(ROOT), str(ROOT / "tools"), CHUNK, len(DATA), hashlib.sha256(DATA).hexdigest(), NAME))
-        with small_pieces(), Server(delay=0.05) as srv, tempfile.TemporaryDirectory() as d:
+        with small_pieces(), Server(delay=0.05, real_delay=True) as srv, tempfile.TemporaryDirectory() as d:
             env = dict(os.environ, STRATA_SOURCE="huggingface")
             proc = subprocess.Popen([sys.executable, "-c", runner, srv.url, d], env=env,
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -319,7 +321,7 @@ class Resume(unittest.TestCase):
                             break
                     except (OSError, ValueError, KeyError):
                         pass
-                    time.sleep(0.05)
+                    REAL_SLEEP(0.05)
             finally:
                 proc.kill()
                 proc.wait()

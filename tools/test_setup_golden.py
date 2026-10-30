@@ -56,7 +56,11 @@ def normalize(v, t: Path):
     if isinstance(v, list):
         return [normalize(x, t) for x in v]
     if isinstance(v, str):
-        return re.sub(rf"(?<![w.-]){re.escape(setup.EXE)}(?![w.-])", "<EXE>", v.replace(str(t), "<T>").replace("\\", "/"))   # #973: only the whole name, not "strata-x.log" on Linux
+        v = v.replace(str(t), "<T>").replace("\\", "/")
+        # the platform's own names of the programs (strata.exe or strata, strata-vision.exe or strata-vision, ...) so the baseline compares on Windows and Linux (#3325)
+        for name, label in ((setup.HVEXE, "<HVEXE>"), (setup.VEXE, "<VEXE>"), (setup.EXE, "<EXE>")):
+            v = re.sub(rf"(?<![w.-]){re.escape(name)}(?![w.-])", label, v)   # #973: only the whole name, not "strata-x.log" on Linux
+        return v
     return v
 
 
@@ -94,6 +98,7 @@ def install(ram, found, argv, answers=None, extra=(), avx512=False, configs=()):
         patches = [
             mock.patch.object(setup, "ROOT", t),
             mock.patch.object(setup, "GPU_PICK", None),
+            mock.patch.object(setup, "auto_sycl_windows", lambda: False),
             mock.patch.object(setup, "data_folder", lambda d, *a, **k: (t / "data", [])),
             mock.patch.object(setup, "load_settings", lambda: {}),
             mock.patch.object(setup, "save_settings", lambda s: None),

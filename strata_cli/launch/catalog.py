@@ -367,6 +367,25 @@ class Catalog:
         _m, families, _c, _s = self.tables()
         return (families[family].get("tag", "") + model).lower()
 
+    def model_folder(self, base: Path, family: str, model: str) -> Path:
+        """The folder a model's files are in under `base/models`. setup.py names it with the case kept (`models/IQ3_S`), the run-config tag is
+        lower case (`iq3_s`): on a case-sensitive disk the two are different folders, so the one that exists wins, and a folder that differs
+        only in case is found (#3996). When none exists yet it is setup's own name, because that is where the download will go."""
+        _m, families, _c, _s = self.tables()
+        models = Path(base) / "models"
+        own = models / (families[family].get("tag", "") + model)
+        lower = models / self.tag_of(family, model)
+        for candidate in (own, lower):
+            if candidate.is_dir():
+                return candidate
+        try:
+            for entry in models.iterdir():
+                if entry.name.lower() == lower.name and entry.is_dir():
+                    return entry
+        except OSError:
+            pass
+        return own
+
     def kv_gb(self, tokens: int, kv: str = "int8") -> float:
         """The conversation memory for this many tokens, in GB (setup.py's UD_FIT_KV_BYTES: 13 attention layers)."""
         mod = self.strata.setup_module()

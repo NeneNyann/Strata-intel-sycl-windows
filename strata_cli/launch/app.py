@@ -24,11 +24,11 @@ from strata_cli.launch import store
 from strata_cli.launch.catalog import Catalog
 from strata_cli.launch.runner import Cancelled, Event, LaunchError, Result, Runner, read_config
 from strata_cli.launch.screens import (AccessScreen, AdvancedScreen, CardsScreen, ConfirmScreen, ContextScreen, FolderScreen,
-                                       ModelScreen, ParallelScreen, PicturesScreen, RunScreen, SaveScreen, StartScreen,
+                                       ModelScreen, ParallelScreen, PicturesScreen, RunScreen, SaveScreen, SpeedScreen, StartScreen,
                                        TuningScreen, flow_for)
 from strata_cli.launch.widgets import CSS, Glyphs
 
-SCREENS = {"model": ModelScreen, "cards": CardsScreen, "folder": FolderScreen, "context": ContextScreen, "pictures": PicturesScreen,
+SCREENS = {"model": ModelScreen, "cards": CardsScreen, "folder": FolderScreen, "context": ContextScreen, "pictures": PicturesScreen, "speed": SpeedScreen,
            "parallel": ParallelScreen, "tuning": TuningScreen, "advanced": AdvancedScreen, "access": AccessScreen, "save": SaveScreen}
 
 
@@ -160,7 +160,10 @@ class Ctx:
                                "The engine's own list could not be read here; names are not checked."
         if not cfg and not s.extra:
             self.engine_note = self.engine_note or "The model is not installed yet; the defaults and tuned values appear after it is."
-        self._adv = P.build_rows(text, base_args, tuned_args, base_env, tuned_env, s.extra)
+        from strata_control import speed_switches
+        gpus = list(getattr(self.computer, "gpus", None) or [])
+        switches = P.switch_params(speed_switches.applicable(cfg, gpus, self.catalog.installed_backend()))
+        self._adv = P.build_rows(text, base_args, tuned_args, base_env, tuned_env, s.extra, switches)
         return self._adv
 
     def command_text(self) -> str:

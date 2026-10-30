@@ -63,6 +63,7 @@ namespace strata::prefill { void set_nonresident_share(double share); }   // SYC
 #include "strata/kernels/native_rope.hpp"
 #include "strata/kernels/mrope.hpp"
 #include "strata/kernels/kv_q4.hpp"
+#include "strata/program/adapt_decay.hpp"
 #include "strata/program/split_rules.hpp"
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
@@ -1172,6 +1173,20 @@ bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, co
     return false;
 }
 
+/// #3350: a conversation checkpoint is an optimization, like parking.  After a failed save: true when the failure was
+/// only the copy's memory (a host or driver allocation, which does not stick), so the caller goes on without that
+/// checkpoint; false when the GPU itself is unwell (a sticky error comes back from the synchronize), which still ends
+/// the request as before.
+bool checkpoint_failure_is_survivable() {
+    // SYCL has no sticky error state to clear: the queues either drain or throw (a lost device)
+    try {
+        dpct::get_current_device().queues_wait_and_throw();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
 /// Puts a checkpoint's running state back; the positional cells below it are the caller's to guarantee.
 bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
     std::string error;
@@ -1635,7 +1650,7 @@ int main(int argc, char **argv) try {
         else if (a == "--mtp-window") o.mtp_window = std::atoll(next("--mtp-window"));
         else if (a == "--pcie-frac") o.pcie_frac = std::atof(next("--pcie-frac"));
         else if (a == "--adapt-every") o.adapt_every = std::atoi(next("--adapt-every"));
-        else if (a == "--adapt-decay") o.adapt_decay = (float) std::atof(next("--adapt-decay"));
+        else if (a == "--adapt-decay") o.adapt_decay = strata::program::adapt_decay_checked(std::atof(next("--adapt-decay")));
         else if (a == "--spec-min-p") o.spec_min_p = std::atof(next("--spec-min-p"));
         else if (a == "--stop-eos") o.stop_eos = true;
         else if (a == "--spec-split") o.spec_split = true;
@@ -1822,9 +1837,23 @@ int main(int argc, char **argv) try {
         };
         split_auto = o.layer_split == "auto";
         bool ok = o.serve && (split_auto || ints(o.layer_split, split_at));
+        // SYCL port: a stage is a GPU of the PRIMARY device's backend.  Everything else that the runtime lists is
+        // not a stage: the batch slots load the OpenCL adapter as well, so on a two-card `xe` box
+        // dpct::device_count() then reports the CPU and the OpenCL view of the same two cards (5 devices), and an
+        // automatic split tried to put a stage on the CPU ("layer split, CUDA2 weights: the weight arena does not
+        // fit ... 0 MiB of 160876 MiB free on that card") instead of working.
+        const auto stage_dev = [](int d) -> bool {
+            try {
+                const sycl::device dev = dpct::get_device(d);
+                return dev.is_gpu() && dev.get_backend() == dpct::get_device(0).get_backend();
+            } catch (...) {
+                return false;
+            }
+        };
         if (ok && !o.split_device.empty()) ok = ints(o.split_device, split_devs);
         else if (ok)
-            for (int d = 1; d < n_dev && (split_auto || split_devs.size() < split_at.size()); ++d) split_devs.push_back(d);
+            for (int d = 1; d < n_dev && (split_auto || split_devs.size() < split_at.size()); ++d)
+                if (!split_auto || stage_dev(d)) split_devs.push_back(d);
         if (ok && !split_auto && split_devs.empty() && split_at.size() == 1) split_devs.push_back(0);   // one GPU
         split_same = ok && split_devs.size() == 1 && split_devs[0] == 0 && !split_auto;
         if (ok && split_auto && split_devs.empty()) {
@@ -2377,8 +2406,26 @@ int main(int argc, char **argv) try {
         }
     }
     // the canonical Q2_0 pack's CPU kernels are AVX-512 only; a native pack runs on AVX2 CPUs as well
-    if (!native_pack) strata::kernels::cpu::cpu_require_expert_support();
-    else if (!strata::kernels::cpu::cpu_avx512_ok())
+    if (!native_pack) {
+        // #2347 (the CUDA engine has this too): a --pack folder without native_experts.txt is read as the canonical Q2_0 pack, whose CPU
+        // kernel needs AVX-512; on an AVX2 CPU (Ryzen 5000, Intel 12th-14th gen) that reads as "this CPU is too old" when the folder is
+        // simply not the native pack (a half-built pack, the wrong folder).  Say so before the refusal.
+        if (!strata::kernels::cpu::cpu_features().usable()) {
+            std::error_code ec;
+            const std::filesystem::path pk(o.pack);
+            std::fprintf(stderr, "strata generate: %s has no native_experts.txt, so it is read as the canonical Q2_0 "
+                                 "pack, whose CPU kernel needs AVX-512.\n"
+                                 "        An NVFP4, i-quant or Unsloth pack has that file in the folder given as --pack "
+                                 "and runs on an AVX2 CPU as well;\n",
+                         o.pack.c_str());
+            if (std::filesystem::exists(pk / "pack" / "native_experts.txt", ec))
+                std::fprintf(stderr, "        it is in %s: use that folder as --pack.\n", (pk / "pack").generic_string().c_str());
+            else
+                std::fprintf(stderr, "        if this is one of those packs, the folder is incomplete or the wrong one "
+                                     "(build it again with tools/iq_pack.py, or run setup again).\n");
+        }
+        strata::kernels::cpu::cpu_require_expert_support();
+    } else if (!strata::kernels::cpu::cpu_avx512_ok())
         std::fprintf(stderr, "strata generate: this CPU has no AVX-512: the expert kernels run on %s "
                              "(multi-token for the i-quant gate/up rows)\n",
                      std::getenv("STRATA_NO_IQ256") == nullptr ? "AVX-2" : "ggml-cpu vec_dot (STRATA_NO_IQ256 set)");
@@ -5964,7 +6011,7 @@ int main(int argc, char **argv) try {
                 ~ParkStage() { strata::core::progress_at("request"); strata::core::progress_beat(); }
             } park_stage;
             const strata::core::ConversationView view{live, live_imgs, checks, cvec_cached};
-            auto reuse = conversations.take_reuse();
+            auto reuse = conversations.take_reuse_for(live);
             size_t estimate = 0;
             if (!strata::core::conversation_snapshot_bytes(view, ss, g, mtp.kv_state(), estimate, err)) {
                 std::fprintf(stderr, "strata serve: conversation cache: skip parking (%s)\n", err.c_str());
@@ -6014,8 +6061,8 @@ int main(int argc, char **argv) try {
                 }
                 const size_t snapshot_bytes = image.bytes();
                 const bool stored = conversations.put(std::move(image), held);
-                std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens in %.1f ms; parked=%zu bytes=%zu evictions=%zu snapshot_bytes=%zu reused_kv_bytes=%zu\n",
-                             stored ? "parked" : "skipped", live.size(),
+                std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens%s in %.1f ms; parked=%zu bytes=%zu evictions=%zu snapshot_bytes=%zu reused_kv_bytes=%zu\n",
+                             stored ? "parked" : "skipped", live.size(), "",
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
                              conversations.size(), conversations.bytes(), conversations.evictions(), snapshot_bytes, reused_bytes);
             } catch (const std::bad_alloc&) {
@@ -6140,7 +6187,13 @@ int main(int argc, char **argv) try {
                 } else {
                     saved = checkpoint_at(done);
                 }
-                if (!saved) { e = "saving a conversation checkpoint failed" + ckpt_why; return false; }
+                if (!saved) {
+                    if (!ckpt_why.empty() || !checkpoint_failure_is_survivable()) {
+                        e = "saving a conversation checkpoint failed" + ckpt_why;
+                        return false;
+                    }
+                    std::fprintf(stderr, "strata serve: checkpoint at %lld skipped: its state could not be copied out; the request goes on without it\n", (long long) done);
+                }
                 pp_next_check = done + o.prompt_cache_every;
             }
             return true;
@@ -6156,7 +6209,16 @@ int main(int argc, char **argv) try {
                     part_next[i] = done + o.prompt_cache_every;
                     ConvCheckpoint part;   // this stage's state at `done` (its stream is synchronized)
                     part.ids.assign(cur.begin(), cur.begin() + done);
-                    if (!checkpoint_save(part, stage_ss, g)) { e = "saving a checkpoint part failed"; return false; }
+                    if (!checkpoint_save(part, stage_ss, g)) {
+                        // #3350: the copy ran out of memory (not the GPU): leave this part out. The set at `done` is then
+                        // incomplete and the checkpoint is skipped below, as for a part that was never made
+                        if (!checkpoint_failure_is_survivable()) { e = "saving a checkpoint part failed"; return false; }
+                        std::fprintf(stderr, "strata serve: checkpoint at %lld skipped: stage %zu's state could not be copied "
+                                             "out (see above); the request goes on without it\n", (long long) done, i);
+                        std::lock_guard<std::mutex> lk(part_mu);
+                        part_at[done].resize(stages.size() + 1);   // (marks the set as seen; its empty parts make it incomplete)
+                        return true;
+                    }
                     std::lock_guard<std::mutex> lk(part_mu);
                     auto& v = part_at[done];
                     v.resize(stages.size() + 1);
@@ -6807,6 +6869,7 @@ int main(int argc, char **argv) try {
             // log-probability and the K most likely tokens', from the verify window's head logits (before sampling,
             // penalties and temperature). -1 (absent): no LP lines; a server that does not ask never sees one.
             int req_logprobs = -1;
+            std::vector<int32_t> req_allowed;
             // tuning keys (setup's calibration measures settings without restarting the engine): the PCIe share of
             // the missed experts and the draft-probability floor, for this request only
             std::vector<uint64_t> req_img_keys;
@@ -6834,6 +6897,17 @@ int main(int argc, char **argv) try {
                     else if (key == "penalty_present") req_penalty_present = fv;
                     else if (key == "seed") req_seed = std::strtoull(tok.c_str() + eq + 1, nullptr, 10);
                     else if (key == "logprobs") req_logprobs = std::clamp(std::atoi(tok.c_str() + eq + 1), -1, 20);
+                    else if (key == "allowed") {
+                        const std::string csv = tok.substr(eq + 1);
+                        size_t p = 0;
+                        while (p < csv.size()) {
+                            const size_t c = csv.find(",", p);
+                            const std::string one = csv.substr(p, c == std::string::npos ? std::string::npos : c - p);
+                            if (!one.empty()) req_allowed.push_back((int32_t) std::atoi(one.c_str()));
+                            if (c == std::string::npos) break;
+                            p = c + 1;
+                        }
+                    }
                     else if (key == "pcie_frac") req_pcie_frac = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "spec_min_p") req_spec_min_p = std::clamp((double) fv, 0.0, 1.0);
                     else if (key == "img_keys") {
@@ -7071,7 +7145,7 @@ int main(int argc, char **argv) try {
                 resume = parked.tokens;
                 from_live = parked.live;
                 if (std::getenv("STRATA_SNAPSHOT_FULL_CAPTURE") == nullptr)
-                    conversations.retain(std::move(incoming->kv), int64_t(live.size()));
+                    conversations.retain(std::move(incoming->kv), int64_t(live.size()), {}, live);
                 incoming.reset(); // Running-state/checkpoint copies are no longer needed.
                 std::fprintf(stderr, "strata serve: conversation cache: restored %lld tokens (%s) in %.1f ms; parked=%zu bytes=%zu\n",
                              (long long) resume, from_live ? "live" : "checkpoint",
@@ -7456,8 +7530,11 @@ int main(int argc, char **argv) try {
                 }
                 at = to;
                 if ((to == turn_at || to == root_at) && !checkpoint_at(to)) {
-                    std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
-                    return 1;
+                    if (!ckpt_why.empty() || !checkpoint_failure_is_survivable()) {
+                        std::printf("ERR saving a conversation checkpoint failed%s\n", ckpt_why.c_str());
+                        return 1;
+                    }
+                    std::fprintf(stderr, "strata serve: checkpoint at %lld skipped: its state could not be copied out; the request goes on without it\n", (long long) to);
                 }
             }
             if (!refill(err)) {
@@ -7602,6 +7679,46 @@ int main(int argc, char **argv) try {
                     return 1;
                 }
                 // the window's first a + 1 tokens are in the session now (the last output is not: it is next x)
+                // STRATA_PIPELINE_DUMP=<file>: the serial half of the pipelined window's state diff (see the same block
+                // in the pipelined loop): the first stage's GDN state after every committed window.
+                {
+                    static const char* sd = std::getenv("STRATA_PIPELINE_DUMP");
+                    if (sd != nullptr) {
+                        const int64_t gf = g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size +
+                                           g.ssm_conv_channels * (g.ssm_d_conv - 1);
+                        const size_t n = (size_t) ss.gdn_alloc * (size_t) gf;
+                        std::vector<float> h(n);
+                        (void) DPCT_CHECK_ERROR(dpct::get_in_order_queue().memcpy(h.data(), ss.gdn_state, n * sizeof(float)).wait());
+                        const size_t n_rec = (size_t) g.ssm_state_size * g.ssm_v_heads * g.ssm_state_size;
+                        const size_t n_cnv = (size_t) g.ssm_conv_channels * (g.ssm_d_conv - 1);
+                        double rec_sum = 0.0, cnv_sum = 0.0;
+                        uint64_t rec_hash = 1469598103934665603ull, cnv_hash = 1469598103934665603ull;
+                        for (int64_t l = 0; l < ss.gdn_alloc; ++l) {
+                            const size_t base = (size_t) l * (size_t) gf;
+                            uint64_t rh = 1469598103934665603ull, ch = 1469598103934665603ull;
+                            for (size_t i = 0; i < n_rec; ++i) {
+                                uint64_t bb = 0;
+                                std::memcpy(&bb, &h[base + i], sizeof(float));
+                                rh = (rh ^ bb) * 1099511628211ull;
+                                rec_sum += (double) h[base + i];
+                            }
+                            for (size_t i = 0; i < n_cnv; ++i) {
+                                uint64_t bb = 0;
+                                std::memcpy(&bb, &h[base + n_rec + i], sizeof(float));
+                                ch = (ch ^ bb) * 1099511628211ull;
+                                cnv_sum += (double) h[base + n_rec + i];
+                            }
+                            rec_hash = (rec_hash ^ rh) * 1099511628211ull;
+                            cnv_hash = (cnv_hash ^ ch) * 1099511628211ull;
+                        }
+                        if (std::FILE* df = std::fopen(sd, "a")) {
+                            std::fprintf(df, "pos %lld serial rec %.9g %016llx cnv %.9g %016llx\n", (long long) (p + a + 1),
+                                         rec_sum, (unsigned long long) rec_hash, cnv_sum,
+                                         (unsigned long long) cnv_hash);
+                            std::fclose(df);
+                        }
+                    }
+                }
                 for (int i = 0; i <= a; ++i) consumed.push_back(window[(size_t) i]);
                 draft_offered += T - 1;
                 draft_accepted += a;
@@ -7622,7 +7739,14 @@ int main(int argc, char **argv) try {
                             for (const float v : lrow) se += std::exp((double) v - mx);
                             const double lse = (double) mx + std::log(se);
                             std::printf("LP %.6f", (double) lrow[(size_t) outv[(size_t) i]] - lse);
-                            if (req_logprobs > 0) {
+                            if (!req_allowed.empty()) {
+                                // only the ids the caller named (never the chosen one, which the head carries, and never an id
+                                // past the engine's own vocabulary); the server renormalises over them
+                                for (const int32_t id : req_allowed) {
+                                    if (id == outv[(size_t) i] || id < 0 || (size_t) id >= lrow.size()) continue;
+                                    std::printf(" %d:%.6f", (int) id, (double) lrow[(size_t) id] - lse);
+                                }
+                            } else if (req_logprobs > 0) {
                                 lord.resize(lrow.size());
                                 for (size_t v = 0; v < lrow.size(); ++v) lord[v] = (int32_t) v;
                                 std::partial_sort(lord.begin(), lord.begin() + req_logprobs, lord.end(),

@@ -28,7 +28,8 @@ from strata_control.profiles import ProfileError
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}\Z")
+# a dot is allowed inside the name (DeepSeek-V4.1-Flash: "deepseek-v4.1-flash-ist-das-2.00bpw"), never two in a row and never first
+MODEL_ID = re.compile(r"[a-z0-9](?:[a-z0-9_-]|\.(?!\.)){0,127}\Z")
 MAX_CONFIG_BYTES = 1024 * 1024
 MAX_CONFIGS = 128
 MAX_IMPORT_SHARDS = 128
@@ -292,6 +293,33 @@ def _candidate_by_header(shards: list[Path], tensors: int, payload: int, experts
                 "expected_expert_types": sorted(expected), "expected_tensor_count": tensors,
                 "setup_args_hint": ["--family", family, "--model", model, "--gguf-dir", str(shards[0].parent)]}
     return None
+
+
+def _candidate_by_layout(shards: list[Path], tensors: int, payload: int, experts: set[str]) -> dict | None:
+    """A qwen4exp file set that is no build Strata has tested (a fine-tune, a K-quant mix from another maker) but has the layout of one
+    (#3651 #3777): the closest row by expert formats, then by size. Strata uses the files as that model and says so; it never refuses a
+    working file for not being on the list (recommend, never force)."""
+    try:
+        catalog = json.loads((ROOT / "data" / "gguf_fingerprints.json").read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    best = None
+    for selection in sorted(SUPPORTED_SELECTIONS):
+        row = catalog.get(selection) if isinstance(catalog, dict) else None
+        if not isinstance(row, dict) or row.get("tensors") != tensors or not isinstance(row.get("expert_bytes"), dict):
+            continue
+        have = set(row["expert_bytes"])
+        union = have | experts
+        score = (len(have & experts) / len(union)) if union else 0.0
+        key = (-score, abs(int(row.get("bytes") or 0) - payload), selection)
+        if score > 0 and (best is None or key < best[0]):
+            best = (key, selection, have)
+    if best is None:
+        return None
+    family, model = best[1].split("/", 1)
+    return {"family": family, "model": model, "basis": "same_layout_other_build",
+            "expected_expert_types": sorted(best[2] | experts), "expected_tensor_count": tensors,
+            "setup_args_hint": ["--family", family, "--model", model, "--gguf-dir", str(shards[0].parent)]}
 
 
 def _already_set_up(shards: list[Path], candidate: dict | None) -> dict | None:
@@ -576,6 +604,10 @@ def own_path_problem(picked: str) -> tuple[str, str] | None:
     return None
 
 
+
+
+
+
 def plan_import(raw_path: str) -> dict:
     """Inspect a local candidate without copying, parsing tensors or adopting it.
 
@@ -709,6 +741,11 @@ def plan_import(raw_path: str) -> dict:
     candidate = _candidate_selection(shards)
     if candidate is None and metadata is not None and not issues:
         candidate = _candidate_by_header(shards, observed_tensor_count, observed_payload, observed_experts)
+        if candidate is None:
+            candidate = _candidate_by_layout(shards, observed_tensor_count, observed_payload, observed_experts)
+            if candidate is not None:
+                messages.append(f"These files are not exactly a build Strata has tested; they have the layout of {candidate['family']} "
+                                f"{candidate['model']}, so Strata uses them as that model. Check a few answers before you rely on them.")
     if "multiple_model_groups" in issues:
         candidate = None                                  # nothing is chosen for the person
     if candidate is None and not {"multiple_model_groups", "incomplete_or_invalid_shard_set"} & set(issues):

@@ -647,7 +647,8 @@ class Strata:
         plan = self.removal_plan(path)
         return {"model": tag, "config": path.name, "model_name": cfg.get("model_name"),
                 "context": int(val("--max-context")) if str(val("--max-context") or "").isdigit() else None,
-                "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict) else "off",
+                "kv": val("--kv"), "images": ("gpu" if vis.get("gpu") else "cpu") if isinstance(vis, dict)
+                else ("on" if cfg.get("arch") == "deepseek41" and str(val("--vision") or "on").lower() not in ("off", "no", "false", "0") else "off"),
                 "port": cfg.get("port", DEFAULT_PORT), "host": cfg.get("host", "127.0.0.1"),
                 "gpu": cfg.get("gpu"), "gpu_roles": cfg.get("gpu_roles"), "api_key_set": bool(cfg.get("api_key")),
                 "low_ram": "--resident-experts" in a or "--mmap-experts" in a,
@@ -680,6 +681,23 @@ class Strata:
                 seen_d.add(norm(d))
                 once_d.append(d)
         return once, once_d
+
+    @staticmethod
+    def with_shards(files: list) -> list:
+        """The files plus the other parts of every multi-part GGUF among them (name-00001-of-00004.gguf: the config names only the
+        first), so deleting a model takes all its parts and never leaves 100 GB behind (#3716)."""
+        out, seen = [], set()
+        for f in files:
+            names = [Path(f)]
+            m = SHARD_NAME.match(str(f))
+            if m:
+                names += [Path(f"{m.group(1)}-{i:05d}-of-{m.group(3)}.gguf") for i in range(1, int(m.group(3)) + 1)]
+            for n in names:
+                key = norm(n)
+                if key not in seen:
+                    seen.add(key)
+                    out.append(n)
+        return out
 
     @staticmethod
     def tree_bytes(path: Path) -> int:
@@ -752,16 +770,29 @@ class Strata:
         return {"models": models, "shared_bytes": shared_bytes, "shared_gb": round(shared_bytes / 1e9, 2),
                 "total_bytes": total, "total_gb": round(total / 1e9, 2)}
 
+    @staticmethod
+    def made_by_strata(p: Path, is_dir: bool) -> bool:
+        """A download or pack Strata wrote itself, even in a models folder the person picked or the app chose: a finished GGUF has its
+        .done mark beside it, a prepared pack has its conversion record. The person's own GGUF files have neither (#3716)."""
+        try:
+            if is_dir:
+                return any((p / n).is_file() for n in ("conversions.json", "experts.bin.src.json"))
+            return p.with_name(p.name + ".done").is_file()
+        except OSError:
+            return False
+
     def removal_plan(self, config: Path) -> dict:
         """What deleting this model removes and what it keeps. A file or folder another installed model's config still names
         (the shared MTP draft, a shared PLE shard) is kept; so is anything outside Strata's own folders."""
         cfg = self.read_config(config)
         files, dirs = self.model_paths(cfg)
+        files = self.with_shards(files)
         used_files, used_dirs = set(), set()
         for other in self.configs():
             if norm(other) == norm(config):
                 continue
             f, d = self.model_paths(self.read_config(other))
+            f = self.with_shards(f)
             used_files |= {norm(x) for x in f}
             used_dirs |= {norm(x) for x in d}
         remove, keep = [], []
@@ -775,7 +806,7 @@ class Strata:
         for p, is_dir in [(x, False) for x in files] + [(x, True) for x in dirs]:
             if not p.exists():
                 continue
-            if not self.allowed(p):
+            if not self.allowed(p) and not self.made_by_strata(p, is_dir):
                 keep.append({"path": str(p), "reason": "outside Strata's folders"})
             elif shared(p, is_dir):
                 keep.append({"path": str(p), "reason": "another installed model still uses it"})
@@ -941,6 +972,8 @@ class Strata:
         except Exception:                               # noqa: BLE001 - unknown stays unknown: the app then keeps its safety default
             pass
         hw["gpus"] = nv + amd
+        for g in hw["gpus"]:                            # each make numbers its cards from 0 (the engine drives one make): a stable id tells two cards apart
+            g.setdefault("id", f"{g.get('vendor') or 'gpu'}:{g.get('index')}")
         try:                                            # how fast each card is (SMs x clock): the app and the Terminal pick the Main card by it
             from strata_control import gpu_roles
             gpu_roles.add_speeds(hw["gpus"])
@@ -1097,6 +1130,7 @@ class Strata:
                 out.append({"family": family, "title": fd["title"], "about": fd.get("about"), "experimental": False,
                             "images": any(x["images"] for x in sizes), "sizes": sizes})
         return out
+
 
     def recommend(self, hw: dict) -> dict:
         """setup.py's own rules: the size it preselects (IQ3_XXS from 60 GB of RAM, else the first, Q2_0), the
@@ -1607,7 +1641,18 @@ def own_nvidia_gpus() -> list:
     for line in s.strip().splitlines():
         try:
             idx, name, mem, cc, drv = [x.strip() for x in line.split(",")]
-            found.append({"index": int(idx), "name": name, "vram_gb": float(mem) / 1024.0,
+            try:
+                mem_gb = float(mem) / 1024.0
+            except ValueError:
+                if platform.machine().lower() not in ("aarch64", "arm64"):
+                    raise            # as before on x86: a card whose memory nvidia-smi does not report is not listed
+                # a DGX Spark (GB10): one memory for the CPU and the GPU, memory.total is [N/A]; counted as setup.py's gpus() counts it
+                # (the RAM less the OS's 6 GB, none of it room beside the RAM)
+                shared = max(0.0, own_ram_gb() - 6)
+                found.append({"index": int(idx), "name": name, "vram_gb": shared, "arch": cc.replace(".", ""), "driver": drv,
+                              "uma": True, "dedicated_gb": 0.0, "shared_gb": shared})
+                continue
+            found.append({"index": int(idx), "name": name, "vram_gb": mem_gb,
                           "arch": cc.replace(".", ""), "driver": drv})
         except ValueError:
             continue
@@ -1824,7 +1869,8 @@ class Tools:
         self.s = strata
 
     def defs(self) -> list:
-        return tool_defs(*self.s.tables()[:3])
+        models, families, contexts = self.s.tables()[:3]
+        return tool_defs({**{name: {} for name in self.s.own_size_names() if name not in models}, **models}, families, contexts)
 
     def call(self, name: str, args) -> dict:
         defs = {d["name"]: d for d in self.defs()}
@@ -2054,6 +2100,14 @@ class Tools:
             if rec.get("model") is None and model is not None and s.mac() and hw.get("ram_gb", 0) < s.mac().MIN_STREAM_RAM_GB:
                 raise ToolError(f"{model} does not fit this Mac: {rec['why']}")
             gpu = gpus = kv = low_ram = None
+            if md.get("multi_file"):                    # DeepSeek on a Mac (0.2.7.1): the sets that were run there, 8K like everywhere, text only
+                from strata_control import dsv41_fit
+                if model not in dsv41_fit.MAC_SET_PACK:
+                    raise ToolError(f"{model} is not offered on a Mac: DeepSeek runs there as " + " or ".join(dsv41_fit.MAC_SET_PACK))
+                if vision in ("yes", "gpu", "cpu"):
+                    raise ToolError("images are not available with DeepSeek on a Mac yet: use vision=no")
+                vision = "no"
+                context = context or getattr(s.setup_module(), "DSV41_CONTEXT", 8192)
             context = context or (s.mac().recommend_context(hw.get("ram_gb") or 0) if s.mac() else 32768)
         if context is None:
             usable = s.engine_gpus(hw)
