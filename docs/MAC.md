@@ -78,8 +78,8 @@ The engine streams the experts from the SSD. It decides this itself when the exp
 
 ## Install
 
-For everyday use follow [the app or Terminal installation](INSTALL.md). The commands below are the source installation, which
-builds the Metal engine locally.
+The commands below describe an upstream Mac source installation and build the Metal engine locally.
+For this fork's Windows Intel release, see [installation](INSTALL.md).
 
 ```sh
 git clone https://github.com/Niko1221/Strata && cd Strata

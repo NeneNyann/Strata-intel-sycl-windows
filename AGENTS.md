@@ -1,14 +1,12 @@
 # AGENTS.md
 
-Strata runs the Qwen3.8-Flash-Next mixture-of-experts model (and its Coder, Swift 1.5, Unsloth, Gyro and NVFP4
-variants, and Qwen3.6-35B-A3B) on a normal PC: one NVIDIA or AMD graphics card plus system RAM on Windows or Linux,
-or an Apple Silicon Mac. Version 0.2.8, engine 0.1.54. It has three parts:
+Strata runs supported Qwen models with an Intel Arc graphics card plus system RAM on Windows.
+Version 0.2.9, engine 0.1.55. It has three parts:
 
 - **The app** (`apps/desktop`, the Tauri shell; `apps/host`, the Node host and the web UI). It is for people who do
-  not want a terminal. One installer per system ([latest release](https://github.com/Niko1221/Strata/releases/latest)):
-  `Strata-0.2.8-windows-x64-setup.exe`, `Strata-0.2.8-linux-x86_64.AppImage`, `Strata-0.2.8-macos-arm64.dmg`.
-  The Windows and Linux installers carry no engine: the app downloads the engine for the graphics card on first
-  start, or installs a file the user already has. The Mac dmg keeps its small Metal engine inside.
+  not want a terminal. The Windows Intel installer ([latest release](https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest))
+  is `Strata_0.2.9_x64-setup.exe`. It includes the SYCL engine, Control, GPU vision encoder and required runtimes.
+  Engine and app updates use this repository's signed release feed.
 - **The Terminal** (`strata.py`, `strata_cli/`, `strata_control/`): the `strata` command. It sets up a model, serves
   it and watches it. Agents use this part.
 - **The engine and the server** (`src/`, `include/`, `metal/`, `sycl/` for the C++/CUDA/HIP/SYCL/Metal engine;
@@ -19,17 +17,11 @@ or an Apple Silicon Mac. Version 0.2.8, engine 0.1.54. It has three parts:
 ## Installing Strata for a user
 
 Follow **[docs/AI_SETUP.md](docs/AI_SETUP.md)**. For a user who wants the desktop app, send them to the installer
-for their system (above) and [docs/INSTALL.md](docs/INSTALL.md). For an agent that has a shell, use the Terminal; the
-short version is:
+for Windows Intel (above) and [docs/INSTALL.md](docs/INSTALL.md). For an agent working from a source checkout,
+use the Terminal; the short version is:
 
-1. Install the Terminal. It needs no administrator rights.
-
-   ```sh
-   curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh  # Linux, Mac
-   irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex                         # Windows PowerShell
-   ```
-
-   On Windows, open a new terminal afterwards so that `strata` is on the PATH.
+1. Set up the source checkout using [docs/SOURCE_INSTALL.md](docs/SOURCE_INSTALL.md).
+   From the repository root, run `python strata.py` in place of `strata` in the commands below.
 2. Check what would happen. Nothing is changed:
 
    ```sh
@@ -62,7 +54,7 @@ Source setup does not make an unsupported model or backend compatible. Strata's 
   the [paper](docs/paper/Strata-Paper.pdf).
 - The Terminal: [docs/TERMINAL.md](docs/TERMINAL.md) and [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md). The app,
   the packages and the update feed: [packaging/README.md](packaging/README.md) and [packaging/UPDATES.md](packaging/UPDATES.md).
-- AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md);
+- Upstream backend references: AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md);
   Mac (Metal): [docs/MAC.md](docs/MAC.md).
 - Tests: the Terminal and Control tests are in `tests/terminal` (`python -m pytest tests/terminal`). The app's UI
   tests run with `npm test` in `apps/host`. Setup's own tests run without a GPU or downloads:

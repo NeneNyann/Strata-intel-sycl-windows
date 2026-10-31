@@ -90,7 +90,7 @@ export function windowsDisplayVendors({ platform = process.platform, run = execF
     const out = run('reg', ['query', 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}', '/s', '/v', 'MatchingDeviceId'], { encoding: 'utf8', timeout: 8000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
     for (const match of String(out).matchAll(/VEN_([0-9A-F]{4})/gi)) found.add(match[1].toLowerCase());
   } catch { /* no registry access: the tools decide */ }
-  if (found.has('10de') && found.has('1002')) {
+  if ([...found].filter(v => ['10de', '1002', '8086'].includes(v)).length > 1) {
     const now = present({ platform, run });
     const kept = new Set([...found].filter(vendor => now.has(vendor)));
     if (kept.size) return kept;
@@ -227,7 +227,7 @@ export async function installBundledEngine({ bundleDir, components, platform = n
       let repair = false;
       if (newestInstalled && compareVersions(newestInstalled.version, manifest.version) >= 0) {
         // an engine of the same version or newer is already there; only a damaged copy of this very package is put right
-        if (sameFolder && !(await packageIsWhole(join(engineRoot, name), sameFolder))) repair = true;
+        if (sameFolder && ((manifest.signature && JSON.stringify(sameFolder.signature) !== JSON.stringify(manifest.signature)) || !(await packageIsWhole(join(engineRoot, name), sameFolder)))) repair = true;
         else { last = { action: 'kept', version: newestInstalled.version }; continue; }
       }
       const source = join(bundleDir, name);

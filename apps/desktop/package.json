@@ -1,7 +1,7 @@
 {
   "name": "strata-desktop",
   "productName": "Strata",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "private": true,
   "description": "Strata Desktop - local AI, tuned to one model.",
   "scripts": {
@@ -11,6 +11,7 @@
     "tauri": "tauri",
     "dev": "npm run build:ui && tauri dev",
     "build": "npm run build:ui && tauri build",
+    "build:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-windows.ps1",
     "build:app": "npm run build:ui && tauri build --bundles app",
     "dmg": "npm run build:ui && tauri build --bundles dmg"
   },

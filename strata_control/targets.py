@@ -30,7 +30,7 @@ BACKEND_MATRIX: dict[str, tuple[str, ...]] = {
 }
 
 # Names and initial VRAM estimates shared by Windows and Linux setup. The runtime probe supplies the actual VRAM.
-INTEL_ARC = {"e223": ("Arc Pro B70", 32.0), "e221": ("Arc Pro B60", 24.0), "e211": ("Arc Pro B60", 24.0),
+INTEL_ARC = {"e223": ("Arc Pro B70", 32.0), "e222": ("Arc Pro B65", 32.0), "e221": ("Arc Pro B60", 24.0), "e211": ("Arc Pro B60", 24.0),
              "e20b": ("Arc B580", 12.0), "e20c": ("Arc B570", 10.0), "e212": ("Arc Pro B50", 16.0),
              "56a0": ("Arc A770", 16.0), "56a1": ("Arc A750", 8.0), "56a2": ("Arc A580", 8.0),
              "56a5": ("Arc A380", 6.0), "56a6": ("Arc A310", 4.0), "5690": ("Arc A770M", 16.0)}

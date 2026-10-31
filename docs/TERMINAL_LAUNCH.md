@@ -6,7 +6,7 @@ opens a monitor. It also connects your coding apps. Text previews of the screens
 
 ## Quick start
 
-1. Install the Terminal with the one-line command in [INSTALL.md](INSTALL.md#the-terminal).
+1. Set up the source checkout as described in [INSTALL.md](INSTALL.md#the-terminal).
 2. Run `strata launch` and follow the screens, or run a command without screens:
 
 ```sh
@@ -18,24 +18,10 @@ strata launch --stop
 
 `strata launch --help` lists every flag with examples. An unknown model or flag gets a plain message with the closest match.
 
-## Install (one line)
+## Run from a source checkout
 
-Linux and Mac:
-
-```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
-```
-
-Windows PowerShell (then open a new terminal):
-
-```powershell
-irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
-```
-
-More in [INSTALL.md](INSTALL.md#the-terminal). The installer needs no administrator rights and puts `strata` on your PATH.
-How far to trust a piped installer is in [SECURITY.md](../SECURITY.md). The engine (the part that talks to your graphics
-card) comes with the first model: `strata launch` fetches the one for your card from the same release, checks its signature
-and test-starts it before using it.
+Follow [SOURCE_INSTALL.md](SOURCE_INSTALL.md). From the repository root, use `python strata.py` in place of
+`strata` in the commands below. More in [INSTALL.md](INSTALL.md#the-terminal).
 
 ## The screens
 

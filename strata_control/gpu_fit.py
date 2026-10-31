@@ -19,6 +19,7 @@ Pure functions, no I/O: setup.py, strata_cli/launch and tools/strata_mcp.py impo
 from __future__ import annotations
 
 from typing import Any
+import sys
 
 DENSE_GB = 5.0                 # = native-fit.ts DENSE_GB
 SYSTEM_ROOM_GB = 10.0          # = native-fit.ts SYSTEM_ROOM_GB
@@ -235,7 +236,7 @@ def options(memory_gb: float, ram_gb: float | None, cards: list[dict], vendor: s
     keep = [{**c, "_dup": names.count(str(c.get("name"))) > 1} for c in keep]       # two cards of one model: told apart by their number
     opts = [_option("single", [keep[0]], memory_gb, ram_gb)]
     share = [c for c in keep if float(c.get("vram_gb") or 0) >= SPLIT_MIN_VRAM_GB - 0.5]
-    if len(share) >= 2:
+    if len(share) >= 2 and not (sys.platform == "win32" and vendor == "intel"):
         opts.append(_option("split", share[:2], memory_gb, ram_gb))
         if len(share) > 2:
             opts.append(_option("split-all", share, memory_gb, ram_gb))

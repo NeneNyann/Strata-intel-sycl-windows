@@ -7,8 +7,8 @@ You should be able to explain every changed line and answer review questions abo
 
 ## Before starting
 
-1. Search [issues](https://github.com/Niko1221/Strata/issues) and
-   [pull requests](https://github.com/Niko1221/Strata/pulls), including closed discussions. Add new evidence to an
+1. Search [issues](https://github.com/NeneNyann/Strata-intel-sycl-windows/issues) and
+   [pull requests](https://github.com/NeneNyann/Strata-intel-sycl-windows/pulls), including closed discussions. Add new evidence to an
    existing thread when it covers your problem.
 2. Read [AGENTS.md](AGENTS.md) and the documentation for the component you want to change.
 3. Get maintainer agreement on scope before substantial features, refactors, architecture changes, or changes to
@@ -21,7 +21,7 @@ the situation, bring it to the original discussion and let a maintainer decide w
 
 ## Report a problem people can investigate
 
-Use the matching [issue form](https://github.com/Niko1221/Strata/issues/new/choose). A bug report should include:
+Use the matching [issue form](https://github.com/NeneNyann/Strata-intel-sycl-windows/issues/new/choose). A bug report should include:
 
 - The smallest steps or command that reproduce the problem, and the expected and actual behavior.
 - Strata version or commit, OS, GPU and VRAM, and relevant model, quantization, and configuration.

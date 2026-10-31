@@ -1,16 +1,16 @@
 # Set up Strata for a user
 
-Use this guide when a user asks an AI agent to install Strata (version 0.2.5). There are two release routes. Pick
-one; do not start from a source checkout.
+Use this guide when a user asks an AI agent to install this Windows Intel fork (version 0.2.9).
 
-- **The Terminal and `strata launch`** (below). This is the route for an agent that has a shell.
-- **The desktop app.** One installer per system: `Strata-0.2.8-windows-x64-setup.exe`,
-  `Strata-0.2.8-linux-x86_64.AppImage`, `Strata-0.2.8-macos-arm64.dmg`, from the
-  [latest release](https://github.com/Niko1221/Strata/releases/latest). The Windows and Linux installers carry no
-  engine: on first start the app shows the engine for the user's graphics card and downloads it, or installs a file the
-  user already has ("I already have the file"). Details: [INSTALL.md](INSTALL.md).
+- **The desktop app.** Download `Strata_0.2.9_x64-setup.exe` from the
+  [latest release](https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest). It includes the SYCL engine, Control, GPU vision encoder
+  and required runtimes. Details: [INSTALL.md](INSTALL.md).
+- **The Terminal and `strata launch`** (below) run from a [source checkout](SOURCE_INSTALL.md).
 
 Model availability, provider preference and API details are in [AI_REFERENCE.md](AI_REFERENCE.md).
+
+Model-family and non-Intel backend details below describe upstream capabilities. This fork ships the Windows SYCL
+Qwen engine; check its compatibility limits before selecting a model.
 
 ## 1. Check the computer and the requested model
 
@@ -31,26 +31,10 @@ Model availability, provider preference and API details are in [AI_REFERENCE.md]
 - Explain substantial downloads and follow the user's existing authorization and network/storage constraints.
   Do not install drivers or system build tools as an unannounced side effect of a normal Terminal install.
 
-## 2. Install the Terminal
+## 2. Set up the Terminal from source
 
-The installer downloads a private Python runtime and Control, verifies the release checksums and signed feed, and
-installs into the user's home folder. The engine and model are acquired during launch.
-
-**Linux / Mac:**
-
-```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
-```
-
-**Windows PowerShell:**
-
-```powershell
-irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
-```
-
-Open a new terminal on Windows. On Linux and Mac, use the full executable path printed by the installer if
-`~/.local/bin` is not on PATH. Confirm with `strata --version` and `strata launch --help`.
-Do not search for `START-HERE.bat` in the installed app or Terminal: it is not part of them.
+Follow [SOURCE_INSTALL.md](SOURCE_INSTALL.md). From the repository root, run `python strata.py` in place of
+`strata` in the commands below. Check `python strata.py --version` and `python strata.py launch --help`.
 
 ## 3. Select a compatible pack and inspect the plan
 

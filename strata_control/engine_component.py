@@ -477,11 +477,11 @@ def detect_backend(environ=None) -> tuple[str | None, str]:
         if not tool:
             continue
         try:
-            done = subprocess.run([tool, *command[1:]], capture_output=True, timeout=8, text=True,
+            done = subprocess.run([tool, *command[1:]], capture_output=True, timeout=8, text=True, errors="replace",
                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except (OSError, subprocess.SubprocessError):
             continue
-        if done.returncode == 0 and done.stdout.strip():
+        if done.returncode == 0 and (done.stdout or "").strip():
             if backend == "hip" and "gfx" not in done.stdout:
                 continue
             if backend == "sycl" and "level_zero" not in done.stdout.lower() and "gpu" not in done.stdout.lower():
@@ -632,13 +632,13 @@ def _windows_adapters_cim() -> list[dict]:
         return []
     try:
         done = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command",
-                               "Get-CimInstance Win32_VideoController | ForEach-Object { $_.PNPDeviceID + '|' + $_.Name + '|' + $_.AdapterRAM }"],
-                              capture_output=True, text=True, timeout=15, stdin=subprocess.DEVNULL,
+                               "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-CimInstance Win32_VideoController | ForEach-Object { $_.PNPDeviceID + '|' + $_.Name + '|' + $_.AdapterRAM }"],
+                              capture_output=True, text=True, errors="replace", timeout=15, stdin=subprocess.DEVNULL,
                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return []
     found = []
-    for line in done.stdout.splitlines():
+    for line in (done.stdout or "").splitlines():
         match = re.search(r"VEN_([0-9A-F]{4})&DEV_([0-9A-F]{4})", line, re.I)
         if not match:
             continue
@@ -655,7 +655,7 @@ def windows_display_adapters() -> list[dict]:
     anything), then Win32_VideoController when the key lists nothing: {"vendor": "10de"|"1002"|"8086"|..., "device": int, "name",
     "vram_gb"}. Empty off Windows or when neither can be read."""
     found = _windows_display_adapters_registry()
-    if len({a.get("vendor") for a in found} & {"10de", "1002"}) > 1:
+    if len({a.get("vendor") for a in found} & {"10de", "1002", "8086"}) > 1:
         # The registry keeps the driver entry of a card that was taken out (an NVIDIA card swapped for a Radeon, #3892): when two makes are
         # listed, only the adapters Windows reports as present now count.
         present = {(a["vendor"], a["device"]) for a in _windows_adapters_cim()}
@@ -796,10 +796,10 @@ def _smi_query(field_name: str) -> list[str]:
         return []
     try:
         done = subprocess.run([tool, f"--query-gpu={field_name}", "--format=csv,noheader"], capture_output=True,
-                              timeout=8, text=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                              timeout=8, text=True, errors="replace", creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     except (OSError, subprocess.SubprocessError):
         return []
-    return [line.strip() for line in done.stdout.splitlines() if line.strip()] if done.returncode == 0 else []
+    return [line.strip() for line in (done.stdout or "").splitlines() if line.strip()] if done.returncode == 0 and done.stdout else []
 
 
 def nvidia_driver_version() -> str | None:

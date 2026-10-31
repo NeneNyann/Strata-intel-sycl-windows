@@ -324,6 +324,16 @@ def install(argv) -> int:
         if option("--kv-streaming") is None:
             S.warn("k8v4 KV streaming is unsupported on SYCL; keeping KV in VRAM (--kv-streaming off)")
             rest += ["--kv-streaming", "off"]
+    if option("--parallel") not in (None, "1", "auto"):
+        S.fail("the Windows Intel engine currently serves one request at a time")
+    if option("--parallel") is None:
+        rest += ["--parallel", "1"]
+    elif option("--parallel") == "auto":
+        for i, arg in enumerate(rest):
+            if arg == "--parallel":
+                rest[i + 1] = "1"
+            elif arg == "--parallel=auto":
+                rest[i] = "--parallel=1"
     if "--build" in rest and "--check" not in rest:
         rc = subprocess.call(["cmd", "/c", str(ROOT / "sycl/build-release-windows.bat")], cwd=ROOT)
         if rc:
@@ -366,6 +376,21 @@ def install(argv) -> int:
         chosen.update(card)
         return {**card, "count": len(cards)}
     S.hip_card = hip_card
+    if S.CONTROL:
+        control_engine_step = S.control_engine_step
+        def control_step(gpu, vision):
+            llama, eng, meta, lib_dirs, gpu, vision = control_engine_step(gpu, vision)
+            if (eng / "strata-device.exe").is_file():
+                gpu = hip_card(eng, gpu, cards)
+                vision, _reader = vision_reader(eng, vision, gpu)
+            else:
+                chosen.update({**gpu, "sycl_index": gpu["index"]})
+            return llama, eng, meta, lib_dirs, gpu, vision
+        S.control_engine_step = control_step
+    write_setup_config = S.write_setup_config
+    def write_native_config(cfg_path, cfg, *args, **kwargs):
+        return write_setup_config(cfg_path, to_native(cfg, chosen), *args, **kwargs)
+    S.write_setup_config = write_native_config
     write = S.write_run_script
     def write_run_script(model, cfg_path, port, open_browser=True):
         cfg = json.loads(Path(cfg_path).read_text(encoding="utf-8"))

@@ -47,7 +47,7 @@
       "minimumSystemVersion": "15.0",
       "entitlements": "entitlements.plist"
     },
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": true,
     "windows": {
       "nsis": {
         "installMode": "currentUser",
@@ -64,9 +64,10 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI2QjA5OTk5MDU1MjFGNUUKUldSZUgxSUZtWm13dHNGRU40N2xOUjdZZGpvcGl0NTB2WGxnS3VTc2RlakpSbnBxUkxndHNFY0oK",
+      "requireSignedVersion": true,
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNCODk3MEVFNTIxQzQyNDIKUldSQ1FoeFM3bkNKTzgwYjBnaXgyZUpLQnM3eWphNjBYeTVROHg5VUpmMll0TTE0S2ZNa1hrOC8K",
       "endpoints": [
-        "https://github.com/Niko1221/Strata/releases/latest/download/latest.json"
+        "https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

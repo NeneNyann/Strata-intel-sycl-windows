@@ -80,6 +80,14 @@ def package(build: Path, vision_build: Path, out: Path) -> Path:
     for p in programs:
         if not p.is_file():
             raise RuntimeError(f"missing program: {p}")
+        data = p.read_bytes().lower()
+        paths = [ROOT, build, vision_build]
+        paths += [Path(os.environ[key]) for key in ("USERPROFILE", "ONEAPI_ROOT", "VCToolsInstallDir", "WindowsSdkDir")
+                  if os.environ.get(key)]
+        for path in paths:
+            for value in (str(path), str(path).replace("\\", "/")):
+                if any(value.lower().encode(encoding) in data for encoding in ("utf-8", "utf-16le")):
+                    raise RuntimeError(f"build-machine path remains in {p.name}; rebuild with path remapping")
     need, todo = {}, list(programs)
     for name in dynamic:
         if name not in inventory:

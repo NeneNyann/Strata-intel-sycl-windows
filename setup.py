@@ -769,7 +769,7 @@ def run(cmd, cwd=None, env=None, check=True, quiet=False):
     env.setdefault("STRATA_EXIT_WITH_PARENT", "1")     # tools/mtp_fetch.py ends when setup ends (#3257: a cancel left it writing)
     r = subprocess.run([str(c) for c in cmd], cwd=cwd, env=env,
                        stdout=subprocess.PIPE if quiet else None, stderr=subprocess.STDOUT if quiet else None,
-                       text=True)
+                       text=True, errors="replace")
     if check and r.returncode != 0:
         if quiet and r.stdout:
             say(r.stdout[-4000:])
@@ -798,7 +798,7 @@ def fetch_mtp(mtp: Path, env: dict, tries: int = 3):
 
 def out(cmd):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=60).stdout
+        return subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=60).stdout or ""
     except (OSError, subprocess.TimeoutExpired):
         return ""
 
@@ -838,7 +838,7 @@ def ram_gb():
     if sys.platform == "darwin":
         try:
             value = subprocess.run(["sysctl", "-n", "hw.memsize"], capture_output=True,
-                                   text=True, timeout=3, check=True).stdout.strip()
+                                   text=True, errors="replace", timeout=3, check=True).stdout.strip()
             return int(value) / 2**30
         except (OSError, ValueError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             return 0.0
@@ -1762,6 +1762,10 @@ def choose_gpus(a, found) -> list:
         fail("none of your GPUs can run Strata", "it needs an NVIDIA RTX 20 series or newer (compute capability 7.5+)")
     can = together_ok(found)
     if not can:
+        for g in found:                                # said, not asked: a card that works alone but cannot share a model beside a bigger one
+            if g["index"] != single[0]["index"] and gpu_problem(g) is None:
+                say(f"  GPU {g['index']} ({g['name']}, {g['vram_gb']:.0f} GB) is not used: a card that shares a model needs {SPLIT_MIN_VRAM_GB} GB or more, "
+                    f"so the model runs on GPU {single[0]['index']} alone.")
         return [single[0]["index"]]
     return choose_roles(a, found)
 
@@ -2078,7 +2082,7 @@ CMAKE_MIN = (3, 24)                    # CMakeLists.txt: cmake_minimum_required(
 def _tool_version(path, name):
     """(ok, version tuple) of `path --version`: ok False when it does not run (a pip launcher whose Python is gone)."""
     try:
-        done = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=30)
+        done = subprocess.run([path, "--version"], capture_output=True, text=True, errors="replace", timeout=30)
     except (OSError, subprocess.SubprocessError):
         return False, ()
     if done.returncode != 0:
@@ -3009,13 +3013,14 @@ def own_gguf_is_whole(path: Path) -> bool:
         return False
 
 
-def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None) -> None:
+def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None, also: tuple = ()) -> None:
     """A shard's size and SHA-256 against the pinned values (the Unsloth file); the result is kept in its finish mark,
     so the ~5 minutes of hashing 111 GB happen once.  A wrong file is deleted, so the next run downloads it again.
     `repair` (a downloaded file's own re-reader, see repair_download): the wrong file is first compared with the server
-    piece by piece and only the damaged pieces are written again, then it is checked a second time."""
+    piece by piece and only the damaged pieces are written again, then it is checked a second time.
+    `also`: other SHA-256 values that are the same file for Strata's purposes (the Engram ISTA-DASLab converted in place on 2026-10-27, DSV41_SHA_ALSO)."""
     m = s.with_name(s.name + ".done")
-    if m.exists() and f"sha256 {sha}" in m.read_text(encoding="utf-8", errors="replace"):
+    if m.exists() and any(f"sha256 {x}" in m.read_text(encoding="utf-8", errors="replace") for x in (sha, *also)):
         return
     have = s.stat().st_size if s.exists() else -1
     if own and have > 0 and have != size and own_gguf_is_whole(s):
@@ -3038,6 +3043,10 @@ def verify_sha256(s: Path, size: int, sha: str, own: bool = False, repair=None) 
             digest = _hash_file(s, size)
         else:
             say("  The damaged parts could not be found this way.")
+    if digest != sha and digest in also:
+        say(f"  {s.name} is the converted version ISTA-DASLab published on 2026-10-27 (the same tables in one tensor); it is used as it is")
+        mark(s, f"sha256 {digest}")
+        return
     if digest != sha:
         if own and own_gguf_is_whole(s):
             warn(f"{s.name} is not the published file (SHA-256 {digest[:12]}..., expected {sha[:12]}...) but it is a complete GGUF file, so "
@@ -4073,11 +4082,12 @@ _DISPLAY_CLASS = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bf
 
 def _win_display_adapters() -> list[dict]:
     """The display adapters present ({"name", "pnp"}), from Win32_VideoController."""
-    ps = ("Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.PNPDeviceID + '|' + "
+    ps = ("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "      # the pipe is read as UTF-8 (#4675)
+          "Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.PNPDeviceID + '|' + "
           "$_.AdapterRAM }")
     text = out(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps])
     found = []
-    for line in text.splitlines():
+    for line in (text or "").splitlines():
         parts = line.strip().split("|")
         if len(parts) >= 2 and parts[1]:
             ram = parts[2] if len(parts) > 2 else ""
@@ -4149,7 +4159,8 @@ def amd_gpus_windows(adapters=None, registry=None) -> list[dict]:
         for k, r in enumerate(registry):               # the same card's driver instance: its 64-bit VRAM size
             if k in used or _pci_device_id(r.get("MatchingDeviceId")) != did:
                 continue
-            if r.get("DriverDesc") and ad.get("name") and r["DriverDesc"].strip() != ad["name"].strip():
+            if (r.get("DriverDesc") and ad.get("name") and "\ufffd" not in ad["name"]
+                    and r["DriverDesc"].strip() != ad["name"].strip()):
                 continue
             used.add(k)
             mem = r.get("HardwareInformation.qwMemorySize")
@@ -4217,7 +4228,7 @@ def hip_devices(probe: Path | None = None, text: str | None = None) -> list[dict
             return None
         try:
             hip_runtime_beside_exe(probe.parent)       # #468 #461: not the driver's System32 copy
-            r = subprocess.run([str(probe), "--list-devices"], capture_output=True, text=True, timeout=120,
+            r = subprocess.run([str(probe), "--list-devices"], capture_output=True, text=True, errors="replace", timeout=120,
                                cwd=str(probe.parent), env=engine_env(probe.parent))
         except (OSError, subprocess.TimeoutExpired):
             return None
@@ -4343,7 +4354,7 @@ def engine_from_feed(eng: Path, updating: bool = False) -> Path | None:
     say("  Fetching the ready-made engine from the signed update feed ...")
     try:
         run = subprocess.run([sys.executable, str(ROOT / "strata.py"), "update", "--no-control", "--output", "json"],
-                             env=env, cwd=str(ROOT), capture_output=True, text=True, timeout=3600)
+                             env=env, cwd=str(ROOT), capture_output=True, text=True, errors="replace", timeout=3600)
     except (OSError, subprocess.SubprocessError) as e:
         warn(f"the update feed could not be run ({e})")
         return None
@@ -5679,6 +5690,18 @@ def prebuilt_vision(meta: dict, gpu: dict, vision: str) -> str:
     return vision
 
 
+def local_build_archs(archs, found) -> list:
+    """#4662: the architectures a compiled engine gets code for: the cards this install uses AND every other card Strata can run on in the PC.
+    A PC with a TITAN RTX (sm_75) and an RTX 3080 (sm_86) was updated with archs [75] (the pair was not picked as a split by setup), and the
+    layer-split run on both cards then launched kernels the sm_75 build holds only a trap for: "unspecified launch failure" on every long prompt.
+    One more architecture is a few more minutes of compile, once; a card Strata cannot use (older than sm_75) is left out."""
+    try:
+        present = {int(g["arch"]) for g in found or [] if gpu_problem(g) is None}
+    except (KeyError, TypeError, ValueError):
+        present = set()
+    return sorted({int(x) for x in archs} | present)
+
+
 def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     """Compile the engine (and, for images, the encoder) for this GPU; the results go to engine/.  A compiled
     engine whose source files changed since (a `git pull`) is compiled again: only the changed files, a few minutes.
@@ -5696,6 +5719,7 @@ def build_engine(gpu, vision, yes, llama, toolkit=None) -> Path:
     local = meta.get("source") == "local"
     src, vsrc = source_hash(ENGINE_SOURCES), source_hash(VISION_SOURCES)
     archs = sorted({int(x) for x in gpu.get("archs", [gpu["arch"]])})    # every card the model runs on
+    archs = local_build_archs(archs, gpus())                             # #4662: and every other card in the PC
     built = set(arch_numbers(meta.get("archs")))
     # a card the engine has no code for (a GPU added with --gpus, #128) needs a compile even when the source is the
     # same; the compile keeps the generations it was built for
@@ -6276,7 +6300,7 @@ def write_config(path: Path, cfg: dict):
 # "args_written" (strata_control/user_args.py) is setup's own; "user_args" is not in SETUP_KEYS on purpose: carry_over keeps it,
 # then applies the person's options over the generated ones
 SETUP_KEYS = frozenset({"exe", "args", "cwd", "tokenizer", "model_name", "log", "lib_dirs", "port", "backend", "env",
-                        "gpu", "gpus_asked", "layer_split", "host", "api_key", "draft_vocab", "vision", "args_written"})
+                        "gpu", "gpus_asked", "gpus_by", "layer_split", "host", "api_key", "draft_vocab", "vision", "args_written"})
 SETUP_ENV = frozenset({"STRATA_HIPBLASLT_TUNING", "STRATA_ROCBLAS_TUNING", "STRATA_RESIDENT_PIN", "STRATA_NO_ARENA_THP", "STRATA_MMQ_KQ", "STRATA_HC_Q8",
                        "STRATA_ROUTE_TAIL_SKIP"}) | frozenset(GFX1103_SWITCHES) | frozenset(GFX1150_SWITCHES)   # the "env" entries setup writes (the gfx1103 switches are setup's too: a re-run refreshes them, they do not linger)
 # 0.1.44 added these three, written for Unsloth's files only (unsloth_default_env).  In any other model's config they are the
@@ -6849,6 +6873,31 @@ def settings_summary(cfg: dict, port=None) -> str:
     return " ".join(out) + ("; " if out else "") + "server " + ", ".join(srv)
 
 
+def widen_setups_one_card(cfg_path: Path, cfg: dict, amd: list) -> dict:
+    """A DeepSeek run config on AMD that names one card and was written by setup 0.2.8 or earlier (the card was setup's own pick, marked "asked"
+    by mistake) moves to every card that counts, here at the start, with its pack and files untouched.  A card the person named
+    (strata_control/gpu_pick.py) stays.  Linux only: several AMD cards sharing a model is not supported on Windows."""
+    if WIN or not isinstance(cfg, dict) or cfg.get("gpus_by") or not cfg.get("gpus_asked"):
+        return cfg
+    try:
+        from strata_control import gpu_pick
+        usable = amd_usable_cards(amd)
+        if not gpu_pick.looks_like_setups_pick(cfg, usable):
+            return cfg
+        cards = [c["index"] for c in dsv41_auto_cards(amd, ROOT / "engine")]
+        if len(cards) < 2:
+            return cfg
+        was = gpu_pick.single_card(cfg)
+        new = gpu_pick.widened(cfg, cards)
+        write_config(cfg_path, new)
+        ok(f"DeepSeek now uses all {len(cards)} of your AMD cards (it was set up on GPU {was} alone by an earlier Strata). Nothing is rebuilt. "
+           f"To keep it on one card: strata launch --gpu {was} (it is remembered from then on)")
+        return new
+    except Exception as e:                             # noqa: BLE001 - never stop a start over this
+        warn(f"could not check which cards this model should use ({e})")
+        return cfg
+
+
 def start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open_browser=True, yes=False,
           layer_split=None, keep=None) -> int:
     """Start the model.  Nothing is installed, downloaded or compiled while it starts (strata_control/acquisition.py):
@@ -6907,13 +6956,21 @@ def _start(cfg_path: Path, port: int | None, gpu: int | list | None = None, open
             if miss:
                 fail("the installed engine has no code for " + ", ".join(f"{x['name']} ({x['arch']})" for x in miss),
                      "set it up for these cards: ./setup.sh --setup --backend hip --gpus " + ",".join(map(str, gpu)))
-            cfg["gpu"], cfg["gpus_asked"] = gpu, True
+            cfg["gpu"], cfg["gpus_asked"], cfg["gpus_by"] = gpu, True, "person"
             cfg["layer_split"] = layer_split or cfg.get("layer_split") or "auto"
             split_budget(cfg, yes, True)               # #498: before it is saved (asks when the RAM is short, #737)
             write_config(cfg_path, cfg)
             gpu = None
         elif gpu is not None:
             cmd += ["--gpu", str(gpu)]
+            if not isinstance(gpu, list):                  # a DeepSeek model on AMD keeps a card the person names (the others: this start only)
+                from strata_control import gpu_pick
+                saved = gpu_pick.remember(cfg_path, [gpu])
+                if saved is not None:
+                    cfg = saved
+                    ok(f"saved for this model: it runs on GPU {gpu} from now on")
+        else:
+            cfg = widen_setups_one_card(cfg_path, cfg, amd)   # a DeepSeek config from setup 0.2.8 and earlier: setup's own one-card pick
         found = []
         use = gpu if gpu is not None else cfg.get("gpu")
         if isinstance(use, list):
@@ -7265,7 +7322,7 @@ def mtp_corrupt(mtp: Path, env=None) -> bool:
     if not (mtp / "tensors").is_dir():
         return False
     r = subprocess.run([sys.executable, str(ROOT / "tools" / "mtp_fetch.py"), "verify", "--out", str(mtp)], env=env,
-                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors="replace")
     return r.returncode == 3
 
 
@@ -7464,6 +7521,9 @@ def sycl_setup(argv) -> int:
             skip = True
         elif not x.startswith("--backend="):
             rest.append(x)
+    if WIN and CONTROL:
+        from sycl.setup_windows import install
+        return install(rest)
     script = ROOT / "sycl" / ("setup_windows.py" if WIN else "setup_intel.py")
     if not script.exists():
         fail(f"{script} is missing", "use a full Strata checkout (git clone) - docs/INTEL_ARC.md")
@@ -7559,7 +7619,7 @@ def engine_step(a, gpu, hip, amd, cuda_tk, vision):
 def engine_families(eng: Path) -> set:
     """The model families an engine runs (`strata --families`; an engine from before it: Flash-Next's only)."""
     try:
-        text = subprocess.run([str(eng / EXE), "--families"], capture_output=True, text=True, timeout=60,
+        text = subprocess.run([str(eng / EXE), "--families"], capture_output=True, text=True, errors="replace", timeout=60,
                               env=engine_env(eng)).stdout      # #2372: with the engine's rocm/bin on PATH
     except (OSError, subprocess.SubprocessError):
         return {"qwen4exp"}
@@ -8261,6 +8321,11 @@ def main() -> int:
                     help="several GPUs: run N independent engines, each on its own equal group of the chosen cards (2 "
                          "replicas on 4 cards = two 2-card engines), requests spread over them (opt-in; more total "
                          "throughput for a model that fits fewer cards; each replica holds its own copy of the model)")
+    ap.add_argument("--replica-profile", action="store_true", default=False,
+                    help="two or more GPUs, Qwen3.8 IQ3_S/IQ3_XXS/Q2_0: one engine per card behind the server instead of one "
+                         "layer split, the experts shared in RAM, the batch switches on (opt-in; about 1.8 times the "
+                         "throughput at 8-16 requests at once on 4 Radeon AI PRO R9700; needs about 61 GB of RAM for 2 "
+                         "engines and 66 GB for 4; a layer split you chose, replicas or --parallel always win)")
     ap.add_argument("--kv-streaming", choices=["auto", "on", "off"], default="auto",
                     help="from a 64K context: keep the KV cache in RAM and only the attention's window in VRAM (more "
                          "experts fit on the GPU); auto: when the RAM has room for it")
@@ -8279,7 +8344,7 @@ def main() -> int:
         sys.exit(subprocess.run([sys.executable, str(ROOT / "tools" / "strata_inspect.py"), *a.inspect[:2]]).returncode)
     if sys.platform == "darwin" and CONTROL:
         return mac_control_setup(a)
-    if a.backend == "sycl" or (a.backend is None and not CONTROL and auto_sycl_windows()):
+    if a.backend == "sycl" or (a.backend is None and auto_sycl_windows()):
         return sycl_setup(sys.argv[1:])
     if a.resident_budget_gib is not None and not a.resident_budget_gib > 0:
         ap.error("--resident-budget-gib takes a number of GiB above 0, e.g. --resident-budget-gib 32")
@@ -8358,7 +8423,8 @@ def main() -> int:
                     a.gpus = a.gpus or ",".join(str(g) for g in ch["gpu"])
                     a.layer_split = a.layer_split or ch.get("layer_split")
                 else:
-                    a.gpu = a.gpu if a.gpu is not None else ch.get("gpu")
+                    if earlier_card_kept(prev):
+                        a.gpu = a.gpu if a.gpu is not None else ch.get("gpu")
                 a.yes = True
     global GPU_PICK, OLD_GPUS
     # starting an installed model: --gpus 0,2 (or all) saves those cards for it and starts on them (it used to start
@@ -8472,6 +8538,7 @@ def main() -> int:
                         "your user in the render and video groups)")
         if not usable:
             fail("no AMD GPU Strata can use", f"the AMD backend runs on {AMD_CARDS}")
+        a._cards_named = bool(a.gpu is not None or a.gpus)     # before setup's own pick is written into a.gpu below
         if a.gpus:                                     # a layer split across these cards, the first one the main
             chosen = amd_parse_gpus(a.gpus, amd)
             gpu = chosen[0]
@@ -9381,7 +9448,22 @@ def main() -> int:
             cfg["gpu_order"] = "as_given"
         ok(f"layer split across GPUs {multi} ({cfg['layer_split']})")
         recommend_remote_expert_opt(cfg, off=a.no_remote_expert_opt)
-        if hip and a.layer_split in (None, "auto"):    # four Radeon AI PRO R9700 cards and Qwen3.8 IQ3_S: the measured serving profile
+        replica_done = False
+        if a.replicas is None and a.layer_split in (None, "auto") and (getattr(a, "replica_profile", False) or
+                                                                       os.environ.get("STRATA_REPLICA_PROFILE")):
+            try:                                       # the opt-in replica profile (strata_control/replica_profile.py)
+                from strata_control import replica_profile
+                if getattr(a, "replica_profile", False):
+                    cfg["replica_profile"] = True
+                lines = replica_profile.apply([{"name": c.get("name"), "vram_gb": c.get("vram_gb"), "vendor": c.get("vendor"),
+                                                "index": c.get("index")} for c in chosen], cfg, float(ram),
+                                              parallel_given=a.parallel is not None)
+                replica_done = bool(cfg.get("replicas"))
+                for line in lines:
+                    (ok if replica_done else say)(line)
+            except Exception as e:                     # noqa: BLE001 - a profile is never a reason to stop setup
+                say(f"  (the replica profile was not applied: {e})")
+        if hip and a.layer_split in (None, "auto") and not replica_done:    # four Radeon AI PRO R9700 cards and Qwen3.8 IQ3_S: the measured serving profile
             try:                                       # (strata_control/amd_four_card.py); what the person chose always wins
                 from strata_control import amd_four_card
                 for line in amd_four_card.apply([{"name": c.get("name"), "vram_gb": c.get("vram_gb"), "vendor": "amd"} for c in chosen],

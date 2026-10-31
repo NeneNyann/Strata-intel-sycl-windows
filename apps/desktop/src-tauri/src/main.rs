@@ -287,8 +287,10 @@ fn resource_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         }
     }
     // development: apps/desktop/src-tauri -> ../../host  and  ./resources
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    Ok(manifest)
+    #[cfg(debug_assertions)]
+    return Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+    #[cfg(not(debug_assertions))]
+    Err("The bundled app resources are missing".to_string())
 }
 
 /// Tauri returns Windows paths in the verbatim form (`\\?\C:\...`). Node cannot take such a path as
@@ -683,7 +685,10 @@ fn run_self_test(report_path: &str) -> i32 {
             p
         }
         None => {
+            #[cfg(debug_assertions)]
             let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            #[cfg(not(debug_assertions))]
+            let dev = exe.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
             record(
                 "resources-packaged",
                 false,

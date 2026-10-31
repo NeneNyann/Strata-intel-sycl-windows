@@ -234,7 +234,7 @@ successes. A needle test measures recall on those inputs, not overall model qual
    per-run JSON or CSV and small scripts or prompts needed to repeat it. Use your
    own data format and document its fields and units. Keep large model files and
    generated packs out of the PR.
-4. Open a pull request against `Niko1221/Strata:main`. Summarize the hardware,
+4. Open a pull request against `NeneNyann/Strata-intel-sycl-windows:main`. Summarize the hardware,
    model, configurations tested, and limitations. Keep a results-only submission
    separate from engine changes so reviewers can assess the measurements directly.
 

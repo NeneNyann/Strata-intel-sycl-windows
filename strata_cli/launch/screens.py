@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -580,7 +581,7 @@ class CardsScreen(Base):
         """The cards the installed model was set to by a person's choice (kept unless this launch names others)."""
         from strata_cli.launch.runner import installed_cards
         try:
-            return installed_cards(self.ctx.base_config())
+            return installed_cards(self.ctx.base_config(), self.ctx.computer.usable_gpus)
         except Exception:                                    # noqa: BLE001
             return None
 

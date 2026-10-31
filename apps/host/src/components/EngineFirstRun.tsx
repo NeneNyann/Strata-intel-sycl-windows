@@ -68,6 +68,7 @@ export function EngineFirstRun({ onDone }: { onDone: () => void }) {
         api.get<FirstRunInfo>('/api/engine/first-run').then(setInfo, e => setInfo({ status: 'error', gpus: [], message: e instanceof Error ? e.message : String(e) }));
     }, []);
     useEffect(() => { look(); }, [look]);
+    useEffect(() => { if (info?.status === 'installed') onDone(); }, [info?.status, onDone]);
 
     // follow the download / install job
     useEffect(() => {

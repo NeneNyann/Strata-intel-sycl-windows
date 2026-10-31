@@ -21,6 +21,7 @@ endif()
 project(strata_sycl VERSION ${STRATA_SYCL_VERSION} LANGUAGES C CXX)
 set(STRATA_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 option(STRATA_PORTABLE "build for other PCs: AVX2 ggml baseline" OFF)
+include(${STRATA_ROOT}/cmake/strata_build_paths.cmake)
 if(STRATA_PORTABLE AND MSVC)
   # DPC++ rejects /MT with -fsycl. The release zip bundles the dynamic Microsoft runtime.
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
@@ -237,6 +238,7 @@ foreach(k IN LISTS _kernel_cu)
 endforeach()
 strata_resolve(_kernels ${_kernel_files} src/kernels/ngram.cpp src/ngram/ple_reader.cpp src/platform/direct_file.cpp)
 list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_xmx.dp.cpp)   # port-only: the XMX prompt attention
+list(APPEND _kernels ${CMAKE_CURRENT_SOURCE_DIR}/src/kernels/cuda/qsa_prompt_attn_esimd.dp.cpp)   # port-only: the int8 DPAS (ESIMD) prompt attention
 add_library(strata_kernels STATIC ${_kernels})
 if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
   # The grouped expert paths compare intermediate bytes too: keep multiply/add rounding separate.

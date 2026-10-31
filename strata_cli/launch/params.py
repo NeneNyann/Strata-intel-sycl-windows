@@ -230,7 +230,7 @@ def engine_help_text(engine: str | Path | None) -> str | None:
     import subprocess
     try:
         from strata_control import tuning
-        proc = subprocess.run([*tuning.engine_command(Path(engine)), "--help"], capture_output=True, text=True, timeout=20,
+        proc = subprocess.run([*tuning.engine_command(Path(engine)), "--help"], capture_output=True, text=True, errors="replace", timeout=20,
                               env=tuning.engine_env(Path(engine)))
     except Exception:                                        # noqa: BLE001
         return None

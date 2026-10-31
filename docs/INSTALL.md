@@ -1,16 +1,15 @@
 # Install Strata
 
-This page is for anyone installing or updating Strata (version 0.2.8). Use the **desktop app** for a graphical
-interface, or the **Terminal** for `strata launch` and coding tools. Both use released engine packages. A normal
-install does not need a source checkout or a startup `.bat` file.
+This page is for anyone installing or updating Strata (version 0.2.9). Use the **desktop app** for a graphical
+interface, or use a source checkout for the **Terminal** and coding tools. The Windows Intel desktop installer includes
+the engine and runtimes; a desktop install does not need a source checkout or a startup `.bat` file.
 
 ## Quick start
 
 | I want | Do this |
 | --- | --- |
-| A window with chat | Download the installer from the [latest release](https://github.com/Niko1221/Strata/releases/latest) ([steps](#the-app)) |
-| The terminal, or my coding tool | Run the one-line install, then `strata launch` ([steps](#the-terminal)) |
-| DeepSeek V4.1-Flash | Pick it in the app, or run `strata launch --family deepseek41` ([model page](MODELS.md#deepseek-v41-flash)) |
+| A window with chat | Download the installer from the [latest release](https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest) ([steps](#the-app)) |
+| The terminal, or my coding tool | Use a source checkout, then `python strata.py launch` ([steps](#the-terminal)) |
 
 [Requirements](#what-you-need) · [Desktop app](#the-app) · [Terminal](#the-terminal) ·
 [Update](#updating) · [Files and folders](#where-things-are-stored) · [Build from source](SOURCE_INSTALL.md)
@@ -36,23 +35,13 @@ hardware drivers. Models and updates need an internet connection to download.
 
 ## The app
 
-1. Open the [latest release](https://github.com/Niko1221/Strata/releases/latest).
-2. Download the one installer for your system. There is one per system, not one per graphics card:
-   - **Windows:** run `Strata-0.2.8-windows-x64-setup.exe`. It installs for your user and needs no administrator rights.
-   - **Linux:** make `Strata-0.2.8-linux-x86_64.AppImage` executable, then open it. If FUSE is unavailable, run the
-     downloaded file with `--appimage-extract-and-run`. [Linux help](TROUBLESHOOTING.md).
-   - **Mac:** open `Strata-0.2.8-macos-arm64.dmg`, drag Strata into Applications, then open it. [Mac help](MAC.md).
-3. On Windows and Linux the installer has no engine inside. On first start the app shows the engine for your
-   graphics card with its size and one **Download** button, with progress and resume. If you already downloaded the
-   engine file, choose **I already have the file** and it installs without internet. The Mac file keeps its small
-   Metal engine inside.
-4. Choose a model and its storage folder, let it download, then chat. DeepSeek V4.1-Flash is in the model list on
-   the supported cards ([model page](MODELS.md#deepseek-v41-flash)); it has three sizes, an 8K context and a **Speed**
-   choice, Faster or Full quality.
+1. Open the [latest release](https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest).
+2. Run `Strata_0.2.9_x64-setup.exe` on Windows with an Intel Arc GPU. It installs for your user and needs no
+   administrator rights. The SYCL engine, Control, GPU vision encoder and runtimes are included.
+3. Choose a supported Qwen model and its storage folder, let it download, then chat.
 
-The `strata-engine-…` and `strata-control-…` archives on the release page are components, not installers. The
-installer is the same file for a first install and for an update. There is no Intel desktop installer yet; Intel Arc
-runs on Linux only, through the [Terminal](INTEL_ARC.md).
+`strata-windows-x64-sycl.zip` is the signed engine component, not the desktop installer. The installer is the same
+file for a first install and for an update.
 
 The first launch can take time to check and prepare large model files. Watch its progress and logs; there is no fixed
 startup time for every model or computer. Closing the desktop app stops its managed engine.
@@ -62,35 +51,22 @@ Current app recommendations can differ; choose the model explicitly when you wan
 
 ## The Terminal
 
-Install once, then use `strata launch`. The Terminal includes Python and downloads the engine for your computer.
-
-**Linux / Mac**
-
-```sh
-curl -fsSL https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
-```
-
-**Windows PowerShell**
-
-```powershell
-irm https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
-```
-
-On Windows, open a **new terminal** afterwards. On Linux and Mac, if `strata` is not found, use the full path printed
-by the installer (normally `~/.local/bin/strata`) or add that folder to your shell's PATH.
+Use a [source checkout](SOURCE_INSTALL.md). From the repository root, run `python strata.py` in place of
+`strata` in the commands on this page:
 
 ```sh
-strata launch
+python strata.py launch
 ```
 
 Follow the screens to choose a model, context, storage folder and access settings. The monitor opens after startup.
 Use the address printed by Strata; the default local endpoint is `http://127.0.0.1:8080`.
 The Terminal opens a browser only when you add `--open`.
 
-For a script or AI agent, inspect a plan before downloading. This example selects ISTA-DASLab Q2_0 explicitly:
+For a script or AI agent, inspect a plan before downloading, for example:
 
-To read the install script before you run it, download it first (`curl -fsSL <address> -o install.sh`), read it,
-then run `sh install.sh`.
+```sh
+python strata.py launch --plan --family qwen --model q2_0
+```
 
 ## From source: Windows
 

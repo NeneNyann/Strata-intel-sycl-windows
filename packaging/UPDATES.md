@@ -37,7 +37,7 @@ Comments are for this document only; actual feed files must be strict JSON.
   "generated_at": "2026-10-20T10:00:00Z", "expires_at": "2027-10-20T10:00:00Z",   // expires_at may be null
   "app": {                                  // exactly Tauri's static updater JSON, plus sha256/size per platform
     "version": "0.2.5", "notes": "...", "pub_date": "2026-10-20T10:00:00Z",
-    "platforms": {"windows-x86_64": {"url": "app/Strata-0.2.8-windows-x64-setup.exe", "signature": "<minisign, base64>", "sha256": "...", "size": 71000000}}
+    "platforms": {"windows-x86_64": {"url": "app/Strata-0.2.9-windows-x64-setup.exe", "signature": "<minisign, base64>", "sha256": "...", "size": 71000000}}
   },
   "control": {"version": "0.1.50", "packages": [{"platform": "linux-x86_64", "format": "tar.gz", "url": "control/...tar.gz",
                                                   "size": 0, "sha256": "...", "installed_bytes": 0, "entry": "strata.py"}]},
@@ -131,7 +131,7 @@ All signing happens on the release PC, on the finished files.
 **What is built (per OS)**
 
 * *The installer*, one per OS (0.2.5). The Windows and Linux ones have no engine inside: built with `--config src-tauri/tauri.update.conf.json`, which drops `engine-bundle`. The Mac dmg keeps its small Metal engine (one Mac variant).
-  Windows: `Strata-0.2.8-windows-x64-setup.exe`; Linux: `Strata-0.2.8-linux-x86_64.AppImage`; Mac: `Strata-0.2.8-macos-arm64.dmg` for people and
+  Windows: `Strata-0.2.9-windows-x64-setup.exe`; Linux: `Strata-0.2.9-linux-x86_64.AppImage`; Mac: `Strata-0.2.9-macos-arm64.dmg` for people and
   `Strata.app.tar.gz` as the updater archive (the updater cannot install from a dmg). The Windows and Linux files are both the first download and the
   file `latest.json` names; the first start of the app downloads the engine for the card (the first-run card), or installs a file the person already has.
   Why: an app update must not carry an engine, and the right engine depends on the card. Engines come per card from the signed feed
@@ -149,8 +149,8 @@ All signing happens on the release PC, on the finished files.
     # Linux: tauri build --bundles appimage (no engine inside) is the AppImage
     # on the release PC, per updater artifact (Windows setup .exe, Linux .AppImage, Mac Strata.app.tar.gz):
     npx tauri signer sign -f <path to tauri-updater.key> <artifact>                                 # writes <artifact>.sig
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.5 --archive Strata-0.2.8-windows-x64-setup.exe --sig Strata-0.2.8-windows-x64-setup.exe.sig --notes "..."
-    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.5 --archive Strata-0.2.8-linux-x86_64.AppImage --sig Strata-0.2.8-linux-x86_64.AppImage.sig
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target windows-x86_64 --version 0.2.5 --archive Strata-0.2.9-windows-x64-setup.exe --sig Strata-0.2.9-windows-x64-setup.exe.sig --notes "..."
+    python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target linux-x86_64   --version 0.2.5 --archive Strata-0.2.9-linux-x86_64.AppImage --sig Strata-0.2.9-linux-x86_64.AppImage.sig
     python packaging/feed_tool.py set-app-platform --app-json RELEASE/tauri-latest.json --target darwin-aarch64 --version 0.2.5 --archive Strata.app.tar.gz --sig Strata.app.tar.gz.sig
     python packaging/feed_tool.py build-feed --out RELEASE --sequence N --key <feed-key.json> --engine RELEASE/engine --control RELEASE/control --app-json RELEASE/tauri-latest.json [--dsv41 RELEASE/dsv41]
     python packaging/feed_tool.py verify-feed RELEASE --pub <feed-key.pub.json>
@@ -183,15 +183,15 @@ a platform with no line gets "this release has no Terminal for <platform>". Uplo
 
 **Linux ARM64 (DGX Spark) has its own feed file.** A Control up to 0.1.52 refuses a feed that names a platform it does not know (`the feed's control entry names an unknown platform`), so the `linux-aarch64` entries are not in `strata-feed.json`, which every released client reads. They are in `strata-feed-linux-aarch64.json` (+ `.sig`, same format, same key, its own `sequence`, aarch64 entries only), uploaded to the same release. A Linux ARM64 Terminal reads that file by default, from a folder or a release address (`strata_control.feed.feed_name()`); a source that names its own `.json` file is used as given. Until every client skips unknown platforms, each release must publish both files, and the aarch64 file's sequence must never go down.
 
-The feed is hosted as the files of a GitHub release of `Niko1221/Strata`. The built-in address is
-`https://github.com/Niko1221/Strata/releases/latest/download` (`strata_cli/update_cmd.py` `DEFAULT_FEED` adds `/strata-feed.json`; `install.sh`
-and `install.ps1` use the folder). GitHub assets are flat, so build the packages with `--url-prefix ""` and upload every file of the release folder
-as an asset: `strata-feed.json`, `strata-feed.json.sig`, `install-manifest.txt`, `install.sh`, `install.ps1`, the engine and Control archives and the
-app installer with `latest.json` (the Tauri updater endpoint). `STRATA_FEED` (installers) and `--feed` / `STRATA_UPDATE_FEED` (`strata update`) override the
-address. Nothing in this tree uploads anything.
+The feed is hosted in releases of `NeneNyann/Strata-intel-sycl-windows`. The built-in component endpoint is
+`https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest/download/strata-feed.json`.
+The Windows Intel desktop release contains six flat assets: `Strata_0.2.9_x64-setup.exe`, its `.sig`, `latest.json`,
+`strata-windows-x64-sycl.zip`, `strata-feed.json` and `strata-feed.json.sig`. Control is bundled in the installer.
+`--feed` / `STRATA_UPDATE_FEED` (`strata update`) override the component feed. Nothing in this tree uploads anything.
 
-Publish as a normal release (latest): a pre-release is not found by `latest/download`, so the installers, `strata update` and the app updater would get a 404. The `latest` release must carry every file listed above, so a later hotfix release repeats them all. The app updater reads
-`https://github.com/Niko1221/Strata/releases/latest/download/latest.json`.
+Publish as a normal release (latest): `latest/download` does not select a prerelease. Repeat the six assets for a
+hotfix release. The app updater reads
+`https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest/download/latest.json`.
 
 ## Testing locally
 

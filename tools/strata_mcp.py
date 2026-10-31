@@ -345,7 +345,7 @@ def spawn_detached(cmd: list, cwd: Path, log_path: Path, env: dict | None = None
 def run_quiet(cmd, timeout=30) -> str:
     """A command's stdout ('' when it is missing or fails), without a console window flashing up on Windows."""
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL,
+        return subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout, stdin=subprocess.DEVNULL,
                               creationflags=CREATE_NO_WINDOW if WIN else 0).stdout or ""
     except (OSError, subprocess.SubprocessError, ValueError):
         return ""
@@ -547,6 +547,11 @@ class Strata:
             out[f] = {"title": d["title"], "about": d.get("about"), "tag": d["tag"], "license": d.get("license"),
                       "vision": bool(d.get("vision", True)), "own_path": True}
         return out
+
+    def own_size_names(self) -> list:
+        """Sizes accepted by the install tool for families with their own engine path."""
+        families = getattr(self.setup_module(), "OWN_PATH_FAMILIES", None) or {}
+        return list(dict.fromkeys(name for family in families.values() for name in family.get("models", {})))
 
     def own_size(self, family, model) -> dict | None:
         """One size of an own-path family as a model-table row for install_plan / model_table (None: not an own-path size).
@@ -953,6 +958,8 @@ class Strata:
             amd = []
         if not WIN and not amd and shutil.which("rocm-smi"):
             amd = rocm_smi_gpus()
+        if not WIN and not amd:                         # no setup module, no rocm-smi (ROCm from a Python venv): the kernel's own list
+            amd = kfd_gpus()
         # A PC whose only NVIDIA cards are Pascal / Volta (two GTX 1080s) and that has no AMD card Strata can use: setup runs them with the
         # CUDA 12 engine (old_gpus_opt_in), so the app must not call it "no supported graphics card" and start both cards Off (#3655).
         # A PC with a newer card keeps recommending that one; naming an old card is still the opt-in.
@@ -971,7 +978,23 @@ class Strata:
             mark_display(nv + amd, nvidia_display_active() if nv else {}, windows_desktop_adapters() if WIN and amd else [])
         except Exception:                               # noqa: BLE001 - unknown stays unknown: the app then keeps its safety default
             pass
-        hw["gpus"] = nv + amd
+        intel = []
+        if WIN:
+            try:
+                from sycl.setup_windows import intel_gpus, select_device
+                from strata_control import engine_component as ec
+                try:
+                    engine = ec.resolve(backend="sycl", full=False)
+                except ec.EngineMissing:
+                    engine = None
+                for card in intel_gpus():
+                    if engine:
+                        card = select_device(Path(engine.root), card)
+                    intel.append({**card, "vendor": "intel", "id": f"intel:{card['index']}",
+                                  "usable": bool(engine), "problem": None if engine else "install the Windows Intel engine first"})
+            except (Exception, SystemExit) as e:
+                hw["intel_note"] = str(e)
+        hw["gpus"] = nv + amd + intel
         for g in hw["gpus"]:                            # each make numbers its cards from 0 (the engine drives one make): a stable id tells two cards apart
             g.setdefault("id", f"{g.get('vendor') or 'gpu'}:{g.get('index')}")
         try:                                            # how fast each card is (SMs x clock): the app and the Terminal pick the Main card by it
@@ -1150,7 +1173,7 @@ class Strata:
             return {"family": None, "model": None, "why": why}
         best = max(usable, key=lambda g: (round(g["vram_gb"]), -g.get("index", 0)))
         vram = best["vram_gb"]
-        backend = "hip" if best.get("vendor") == "amd" else "cuda"
+        backend = {"amd": "hip", "intel": "sycl"}.get(best.get("vendor"), "cuda")
 
         def low_fits(m):
             try:
@@ -1168,7 +1191,7 @@ class Strata:
             if model == "IQ2_XS":
                 why = (f"{total}, the 40 GB tier: Swift 1.5's IQ2_XS (thinks for a shorter time)"
                        + ("; Gyro-M (35 GB) is the other choice there, close to IQ3_XXS in quality but 16-21% slower at "
-                          "writing answers than Q2_0" if "Gyro-M" in models and best.get("vendor") in ("nvidia", "amd", "intel") else ""))
+                          "writing answers than Q2_0" if "Gyro-M" in models and best.get("vendor") in ("nvidia", "amd") else ""))
             elif model == "IQ3_XXS":
                 why = f"{total}, the 48 GB tier: IQ3_XXS (better quality, slower)"
             else:
@@ -1184,7 +1207,7 @@ class Strata:
         elif low_fits("IQ1_M"):
             fam, model, why = "coder", "IQ1_M", (f"{ram:.0f} GB of RAM is below the Coder's 32 GB, but the GPU's "
                                                  f"{vram:.0f} GB make up for it (setup's low-RAM mode: slower)")
-        elif "Gyro-S" in models and ram + vram >= models["Gyro-S"]["ram_gb"] + GYRO_ROOM_GB:
+        elif backend != "sycl" and "Gyro-S" in models and ram + vram >= models["Gyro-S"]["ram_gb"] + GYRO_ROOM_GB:
             # Gyro (agentionai): only where the sizes above do not fit.  Their memory figure (Gyro-S 27.6 GB, Gyro-M 35 GB)
             # is VRAM + RAM together and the system needs room beside it, so GYRO_ROOM_GB more is asked for here.
             # Gyro-M when this PC has that much, else Gyro-S.
@@ -1214,7 +1237,7 @@ class Strata:
         if backend == "hip":
             notes.append("AMD (experimental): pictures are on; the reader runs on the CPU under 24 GB of VRAM and on the GPU from 24 GB")
         cmd = (("START-HERE.bat --setup" if WIN else "./setup.sh --setup") +
-               f" --yes --family {fam} --model {model} --context {ctx}" + (" --backend hip" if backend == "hip" else ""))
+               f" --yes --family {fam} --model {model} --context {ctx}" + (f" --backend {backend}" if backend in ("hip", "sycl") else ""))
         return {"family": fam, "model": model, "title": families[fam]["title"] + " " + model, "context": ctx,
                 "backend": backend, "gpu": {k: best.get(k) for k in ("index", "name", "vram_gb")},
                 "download_gb": models[model]["download_gb"], "why": why, "notes": notes, "setup_command": cmd}
@@ -1230,8 +1253,12 @@ class Strata:
         have = {c.stem[len("strata-"):] for c in self.configs()}
         out = []
         for f, fd in families.items():
+            if WIN and (hw or {}).get("engine_vendor") == "intel" and f in ("gyro", "nvfp4", "qwen36"):
+                continue
             sizes = []
             for m in self.sizes_of(models, f):
+                if f == "deepseek41" and self.dsv41_not_here(m):      # the Unsloth 1-bit sets on a DGX Spark: not offered until a Spark run passes
+                    continue
                 own = self.own_size(f, m)
                 d = own or models[m]
                 tag = (fd.get("tag", "") + m).lower()
@@ -1707,6 +1734,43 @@ def windows_video_controllers() -> list:
     return [{"name": x.get("Name"), "driver": x.get("DriverVersion")} for x in d if isinstance(x, dict)]
 
 
+KFD_SUPPORTED = ("gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201", "gfx1030", "gfx1031", "gfx1151")
+
+
+def kfd_gpus(sysfs: str = "/sys") -> list:
+    """AMD cards from the kernel's KFD topology and the amdgpu driver's files, with no ROCm tool and no setup module: a PC that has only the
+    driver plus the engine's own runtime has no rocm-smi, amd-smi or rocminfo, and the cards were then not counted at all (a 4-card PC ran on one).
+    Numbered as HIP numbers them (the GPU nodes in order, CPU nodes skipped)."""
+    base = Path(sysfs) / "class/kfd/kfd/topology/nodes"
+    out = []
+    try:
+        nodes = sorted((p for p in base.iterdir() if p.name.isdigit()), key=lambda p: int(p.name))
+    except OSError:
+        return out
+    for node in nodes:
+        try:
+            props = dict(line.partition(" ")[::2] for line in (node / "properties").read_text().splitlines())
+            ver, simd = int(props.get("gfx_target_version") or 0), int(props.get("simd_count") or 0)
+        except (OSError, ValueError):
+            continue
+        if ver == 0 or simd == 0:
+            continue
+        arch = f"gfx{ver // 10000}{(ver // 100) % 100:x}{ver % 100:x}"
+        dev = Path(sysfs) / f"class/drm/renderD{props.get('drm_render_minor', '').strip()}/device"
+        try:
+            vram = int((dev / "mem_info_vram_total").read_text()) / 2 ** 30
+        except (OSError, ValueError):
+            vram = 0.0
+        try:
+            name = (dev / "product_name").read_text().strip() or f"AMD Radeon ({arch})"
+        except OSError:
+            name = f"AMD Radeon ({arch})"
+        ok = arch in KFD_SUPPORTED
+        out.append({"index": len(out), "name": name, "vram_gb": round(vram, 1), "arch": arch, "driver": "amdgpu", "vendor": "amd",
+                    "usable": ok, "problem": None if ok else f"not supported - Strata's AMD backend does not list {arch}"})
+    return out
+
+
 def rocm_smi_gpus() -> list:
     s = run_quiet(["rocm-smi", "--showproductname", "--showmeminfo", "vram", "--json"])
     try:
@@ -1796,7 +1860,7 @@ def tool_defs(models: dict, families: dict, contexts: list) -> list:
                      "description": "one GPU, as nvidia-smi numbers them (default: the one with the most VRAM)"},
              "gpus": {"type": "string", "pattern": GPUS_PATTERN, "maxLength": 40,
                       "description": "several GPUs sharing the model: '0,2' or 'all' (experimental)"},
-             "backend": {"type": "string", "enum": ["auto", "cuda", "hip"],
+             "backend": {"type": "string", "enum": ["auto", "cuda", "hip", "sycl"],
                          "description": "auto (default), cuda = NVIDIA, hip = AMD on Linux (experimental)"},
              "low_ram": {"type": "string", "enum": ["auto", "on", "off", "resident", "mmap"],
                          "description": "setup's low-RAM mode (default auto)"},
@@ -2075,7 +2139,7 @@ class Tools:
         if sys.version_info < (3, 10) or (WIN and sys.maxsize <= 2**32):
             raise ToolError("this Python is too old or 32-bit: Strata's setup needs 64-bit Python 3.10+; run "
                             + ("START-HERE.bat" if WIN else "./setup.sh") + " once instead (it installs Python)")
-        hw = s.hardware()
+        hw = s.hardware(fresh=WIN)
         rec = s.recommend(hw)
         if model is None and family is None:
             if not rec.get("model"):
@@ -2102,6 +2166,8 @@ class Tools:
             gpu = gpus = kv = low_ram = None
             if md.get("multi_file"):                    # DeepSeek on a Mac (0.2.7.1): the sets that were run there, 8K like everywhere, text only
                 from strata_control import dsv41_fit
+                if model in dsv41_fit.MAC_NOT_YET:
+                    raise ToolError(dsv41_fit.MAC_NOT_YET_LINE)
                 if model not in dsv41_fit.MAC_SET_PACK:
                     raise ToolError(f"{model} is not offered on a Mac: DeepSeek runs there as " + " or ".join(dsv41_fit.MAC_SET_PACK))
                 if vision in ("yes", "gpu", "cpu"):
@@ -2137,6 +2203,10 @@ class Tools:
                 "--vision", vision or "no"]
         if family in ("qwen", "coder"):
             args += ["--experimental-speed-projection", "off"]
+        if backend in (None, "auto") and WIN and hw.get("engine_vendor") == "intel":
+            backend = "sycl"
+        if WIN and backend == "sycl" and family in ("gyro", "nvfp4", "qwen36"):
+            raise ToolError("This model family is not supported by the Windows Intel engine.")
         own = bool(s.own_families().get(family))
         for flag, v in (("--kv", kv), ("--gpu", gpu), ("--gpus", gpus), ("--low-ram", low_ram), ("--port", port),
                         ("--data-dir", str(target) if data_dir else None)):
@@ -2149,7 +2219,7 @@ class Tools:
             if not local.is_absolute() or not local.is_dir() or ".." in local.parts:
                 raise ToolError("gguf_dir must be an existing absolute folder")
             args += ["--gguf-dir", str(local)]
-        if backend in ("cuda", "hip"):
+        if backend in ("cuda", "hip", "sycl"):
             args += ["--backend", backend]
         fit = None
         ram = hw.get("ram_gb")

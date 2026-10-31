@@ -355,7 +355,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {a.out / feedmod.FEED_NAME} (+ .sig); engines {len((doc.get('engine') or {}).get('packages', []))}, "
               f"control {'yes' if 'control' in doc else 'no'}, app {'yes' if 'app' in doc else 'no'}")
     elif a.cmd == "set-app-platform":
-        url = a.url or f"https://github.com/Niko1221/Strata/releases/latest/download/{a.archive.name}"
+        url = a.url or f"https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest/download/{a.archive.name}"
         entry = set_app_platform(a.app_json, target=a.target, archive=a.archive, signature_file=a.sig, url=url, version=a.version,
                                  notes=a.notes, pub_date=a.pub_date, pubkey=a.pubkey)
         print(f"{a.app_json}: {a.target} -> {entry['url']} ({entry['size']} bytes, sha256 {entry['sha256'][:16]}..., signature verified)")

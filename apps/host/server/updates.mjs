@@ -103,6 +103,8 @@ export async function checkComponentUpdates({ control, appUpdater = null, appVer
  */
 export async function engineFirstRun({ control, gpus = [] }) {
   const cards = gpus.map(g => ({ name: g.name ?? 'Graphics card', vramGb: g.vramGb ?? null }));
+  const local = await control.engine?.();
+  if (local?.usable) return { status: 'installed', gpus: cards, installedVersion: local.engine?.version ?? null };
   let report;
   try {
     report = await control.updateCheck({});

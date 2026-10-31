@@ -20,7 +20,7 @@
   <a href="https://buymeacoffee.com/strataengine"><img src="https://img.shields.io/badge/Buy_me_a_coffee-FFDD00?logo=buymeacoffee&logoColor=000" alt="Wesprzyj Stratę na Buy Me a Coffee"></a>
 </p>
 
-<p align="center"><sub><a href="README.upstream.md">English</a> · <a href="README.upstream.zh-CN.md">简体中文</a> · <a href="README.upstream.ja.md">日本語</a> · <a href="README.upstream.de.md">Deutsch</a> · <a href="README.upstream.fr.md">Français</a> · <a href="README.upstream.es.md">Español</a> · <a href="README.upstream.pt-BR.md">Português</a> · <b>Polski</b></sub></p>
+<p align="center"><sub><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.de.md">Deutsch</a> · <a href="README.fr.md">Français</a> · <a href="README.es.md">Español</a> · <a href="README.pt-BR.md">Português</a> · <b>Polski</b></sub></p>
 
 **Bezpłatna, z otwartym kodem źródłowym i do uruchomienia u siebie.** Używaj Straty na swoim komputerze albo razem z ulubionymi narzędziami do programowania. Konto nie jest potrzebne.
 
@@ -99,7 +99,7 @@ Nie wiesz, co się zmieści? [Wybierz model do swojego komputera](docs/MODELS.md
 Zainstaluj aplikację, wybierz model i zacznij rozmawiać. Dla każdego systemu jest jeden instalator. Przy pierwszym
 uruchomieniu aplikacja pobiera silnik dla twojej karty graficznej. [Pomoc z instalatorem](docs/INSTALL.md#the-app).
 
-<sub>Pliki: `Strata-0.2.8-windows-x64-setup.exe` · `Strata-0.2.8-linux-x86_64.AppImage` · `Strata-0.2.8-macos-arm64.dmg`</sub>
+<sub>Pliki: `Strata-0.2.9-windows-x64-setup.exe` · `Strata-0.2.9-linux-x86_64.AppImage` · `Strata-0.2.9-macos-arm64.dmg`</sub>
 
 <p align="center">
   <img src="docs/media/app-chat.png" width="900" alt="Aplikacja Strata na komputer: czat i podgląd kodu na żywo obok siebie">

@@ -19,7 +19,7 @@ acquire or build an engine. Check [model requirements](MODELS.md) before downloa
 
 ## From source: Windows
 
-1. Clone the [repository](https://github.com/Niko1221/Strata) or download and extract its source archive.
+1. Clone the [repository](https://github.com/NeneNyann/Strata-intel-sycl-windows) or download and extract its source archive.
 2. Open the source folder and run `START-HERE.bat`.
 3. Choose a supported model, storage folder and settings. Keep the window open while setup works.
 
@@ -64,7 +64,7 @@ nix develop -c ./setup.sh
 ### Build from git on Linux (to try a pull request or change the code)
 
 ```bash
-git clone https://github.com/Niko1221/Strata.git
+git clone https://github.com/NeneNyann/Strata-intel-sycl-windows.git Strata
 cd Strata
 ./setup.sh --build --no-start
 ```

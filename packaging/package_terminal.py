@@ -67,8 +67,8 @@ PBS_BASE = f"https://github.com/astral-sh/python-build-standalone/releases/downl
 #: `setup.sh` pins: a terminal built from one and an installer built from the other are the same interpreter.
 PYTHON_PINS = {
     "windows-x86_64": {
-        "file": f"cpython-{PYTHON_VERSION}+{PBS_RELEASE}-x86_64-pc-windows-msvc-install_only.tar.gz",
-        "sha256": "194c8f0d9e0de6f1c4576e5dfa67819a48c764be87608b74b8ad43387a57b93b",
+        "file": f"cpython-{PYTHON_VERSION}+{PBS_RELEASE}-x86_64-pc-windows-msvc-install_only_stripped.tar.gz",
+        "sha256": "11ed9f8a6ac64fb1b5a55e40e305a6744a3f77a70863c8f8197a6e4349abc64a",
         "python": "python/python.exe", "archive": "zip",
     },
     "linux-x86_64": {
@@ -120,7 +120,7 @@ TOOLS_SUBSET = (
 #: the bundled tools and writes a run config naming "component:strata-engine". setup.py runs in its CONTROL mode there
 #: (STRATA_CONTROL_INSTALL=1: no pip, no engine fetch, no compiler). Entry points; their local imports under tools/ come with them.
 #: The same list the app's Control component stages (apps/desktop/scripts/stage-control.py uses these names).
-INSTALLER_FILES = ("setup.py", "ref/load.py")   # ref/load.py: strata_pack.py (the Q2_0 AVX-512 repack) imports it
+INSTALLER_FILES = ("setup.py", "ref/load.py", "sycl/setup_windows.py")   # ref/load.py: strata_pack.py (the Q2_0 AVX-512 repack) imports it
 #: calibrate: setup.py imports it after a tune (calibrate_config, and the earlier tuning that a rerun applies); it was missing from this
 #: list in 0.1.47, so every launch after a tune failed (#3613, #3467). setup_tool_imports() below also reads setup.py itself, so a tools/
 #: module it starts to import is never forgotten again; tests/terminal/test_bundle_imports.py checks the staged bundle.
@@ -419,7 +419,7 @@ def main() -> int:
             for cache_dir in list(root.rglob("__pycache__")):
                 shutil.rmtree(cache_dir, ignore_errors=True)
 
-        env = {**os.environ, "PYTHONNOUSERSITE": "1"}
+        env = {**os.environ, "PYTHONNOUSERSITE": "1", "PYTHONDONTWRITEBYTECODE": "1"}
         for k in ("PYTHONHOME", "PYTHONPATH"):
             env.pop(k, None)
         probe = subprocess.run([str(py), "-c", PROBE], capture_output=True, text=True, cwd=str(root), env=env)
