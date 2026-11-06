@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <vector>
 #include <dpct/lib_common_utils.hpp>
 
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
@@ -440,11 +441,67 @@ catch (sycl::exception const &exc) {
 
 bool Gemm::bf16_converts_x() const { return false; }
 
+namespace {
+struct GemmStage {
+    sycl::queue queue;
+    uint8_t* data = nullptr;
+    size_t capacity = 0;
+    bool enabled;
+    explicit GemmStage(const sycl::queue& q) : queue(q) {
+        const char* force = std::getenv("STRATA_SYCL_GEMM_STAGE");
+        enabled = std::getenv("STRATA_SYCL_GEMM_NO_STAGE") == nullptr &&
+                  ((force && force[0] == '1') || strata::intel_gpu_gen(q.get_device()) == strata::IntelGpuGen::Alchemist);
+    }
+    ~GemmStage() {
+        if (data) try { queue.wait_and_throw(); sycl::free(data, queue); } catch (...) {}
+    }
+    uint8_t* reserve(size_t bytes) {
+        if (bytes > capacity) {
+            auto* next = sycl::malloc_device<uint8_t>(bytes, queue);
+            if (!next) throw sycl::exception(sycl::make_error_code(sycl::errc::memory_allocation),
+                                             "prefill GEMM: cannot stage an operand past 4 GiB");
+            if (data) { queue.wait_and_throw(); sycl::free(data, queue); }
+            data = next;
+            capacity = bytes;
+        }
+        return data;
+    }
+};
+
+bool stage_gemm(sycl::queue& q, void* handle, const uint16_t* W, const uint16_t* X,
+                int64_t N, int64_t T, int64_t K, int64_t ldx, dpct::library_data_t type,
+                float beta, float* Y, int64_t ldy) {
+    static thread_local std::vector<std::unique_ptr<GemmStage>> stages;
+    GemmStage* stage = nullptr;
+    for (auto& s : stages) if (s->queue == q) { stage = s.get(); break; }
+    if (!stage) { stages.push_back(std::make_unique<GemmStage>(q)); stage = stages.back().get(); }
+    if (!stage->enabled) return false;
+    constexpr size_t boundary = 4ull << 30;
+    const size_t w_bytes = (size_t) N * (size_t) K * sizeof(uint16_t);
+    const size_t x_bytes = ((size_t) (T - 1) * (size_t) ldx + (size_t) K) * sizeof(uint16_t);
+    const bool far_w = strata::device_offset_end(W, w_bytes) > boundary;
+    const bool far_x = strata::device_offset_end(X, x_bytes) > boundary;
+    if (!far_w && !far_x) return false;
+    const size_t w_stage = far_w ? (w_bytes + 255) & ~size_t(255) : 0;
+    auto* scratch = stage->reserve(w_stage + (far_x ? x_bytes : 0));
+    if (far_w) { q.memcpy(scratch, W, w_bytes); W = reinterpret_cast<uint16_t*>(scratch); }
+    if (far_x) { q.memcpy(scratch + w_stage, X, x_bytes); X = reinterpret_cast<uint16_t*>(scratch + w_stage); }
+    const float alpha = 1.0f;
+    ck(DPCT_CHECK_ERROR(dpct::blas::gemm(
+           (dpct::blas::descriptor_ptr) handle, oneapi::mkl::transpose::trans, oneapi::mkl::transpose::nontrans,
+           (int) N, (int) T, (int) K, &alpha, W, type, (int) K, X, type, (int) ldx, &beta, Y,
+           dpct::library_data_t::real_float, (int) ldy, dpct::compute_type::f32)), "cublasGemmEx (staged)");
+    return true;
+}
+}
+
 void Gemm::bf16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_t N, int64_t K, int64_t ldy,
                 float beta, int64_t ldx, bool /*x_f16*/) {
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     const float alpha = 1.0f;
+    if (stage_gemm(*strata::q_of(stream_), handle_, W, X, N, T, K, ldx > 0 ? ldx : K,
+                   dpct::library_data_t::real_bfloat16, beta, Y, ldy)) return;
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::bf16, X, W, Y, T, N, K, ldy,
                       beta, stream_)) {
@@ -469,6 +526,8 @@ void Gemm::f16(const uint16_t* X, const uint16_t* W, float* Y, int64_t T, int64_
     if (T <= 0 || N <= 0) return;
     if (ldy <= 0) ldy = N;
     const float alpha = 1.0f;
+    if (stage_gemm(*strata::q_of(stream_), handle_, W, X, N, T, K, K,
+                   dpct::library_data_t::real_half, beta, Y, ldy)) return;
 #if defined(__HIPCC__) && defined(STRATA_HIPBLASLT_AVAILABLE)
     if (try_hipblaslt(hipblaslt_state_, strata::prefill::hipblaslt::InputType::f16, X, W, Y, T, N, K, ldy,
                       beta, stream_)) {

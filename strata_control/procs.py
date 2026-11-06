@@ -370,21 +370,30 @@ def orphans_of(engine_exe: str) -> list[Ident]:
     except psutil.Error:
         pass
     found = []
-    for p in psutil.process_iter(["pid", "ppid", "cmdline", "create_time"]):
+    target_name = os.path.basename(engine_exe).lower()
+    for p in psutil.process_iter(["pid", "name"]):
         try:
-            cmd = p.info.get("cmdline") or []
-            if "--serve" not in cmd or p.pid in mine:
+            name = p.info.get("name") or p.name()
+            if p.pid in mine or name.lower() != target_name or not same_file(p.exe(), engine_exe):
                 continue
-            if not same_file(p.exe(), engine_exe):
+            cmd = p.info.get("cmdline")
+            if cmd is None:
+                cmd = p.cmdline()
+            if "--serve" not in (cmd or []):
                 continue
             parent = p.info.get("ppid")
+            if parent is None:
+                parent = p.ppid()
             if parent in mine:
                 continue                              # started by this server (or by a process above it)
             if parent and parent != 1:
                 try:
                     q = psutil.Process(parent)
                     adopted = q.name().lower() in INIT_NAMES      # an init that adopts orphans did not start it
-                    if not adopted and q.create_time() <= p.info["create_time"] + 1.0                             and q.status() != psutil.STATUS_ZOMBIE:
+                    created = p.info.get("create_time")
+                    if created is None:
+                        created = p.create_time()
+                    if not adopted and q.create_time() <= created + 1.0 and q.status() != psutil.STATUS_ZOMBIE:
                         continue                      # a live parent started it: not an orphan
                 except psutil.NoSuchProcess:
                     pass

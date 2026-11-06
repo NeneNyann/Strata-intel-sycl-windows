@@ -1,11 +1,11 @@
 # AGENTS.md
 
 Strata runs supported Qwen models with an Intel Arc graphics card plus system RAM on Windows.
-Version 0.2.9, engine 0.1.55. It has three parts:
+Version 0.2.11, engine 0.1.57. It has three parts:
 
 - **The app** (`apps/desktop`, the Tauri shell; `apps/host`, the Node host and the web UI). It is for people who do
   not want a terminal. The Windows Intel installer ([latest release](https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest))
-  is `Strata_0.2.9_x64-setup.exe`. It includes the SYCL engine, Control, GPU vision encoder and required runtimes.
+  is `Strata_0.2.11_x64-setup.exe`. It includes the SYCL engine, Control, GPU vision encoder and required runtimes.
   Engine and app updates use this repository's signed release feed.
 - **The Terminal** (`strata.py`, `strata_cli/`, `strata_control/`): the `strata` command. It sets up a model, serves
   it and watches it. Agents use this part.

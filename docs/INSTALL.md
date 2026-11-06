@@ -1,6 +1,6 @@
 # Install Strata
 
-This page is for anyone installing or updating Strata (version 0.2.9). Use the **desktop app** for a graphical
+This page is for anyone installing or updating Strata (version 0.2.11). Use the **desktop app** for a graphical
 interface, or use a source checkout for the **Terminal** and coding tools. The Windows Intel desktop installer includes
 the engine and runtimes; a desktop install does not need a source checkout or a startup `.bat` file.
 
@@ -36,7 +36,7 @@ hardware drivers. Models and updates need an internet connection to download.
 ## The app
 
 1. Open the [latest release](https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest).
-2. Run `Strata_0.2.9_x64-setup.exe` on Windows with an Intel Arc GPU. It installs for your user and needs no
+2. Run `Strata_0.2.11_x64-setup.exe` on Windows with an Intel Arc GPU. It installs for your user and needs no
    administrator rights. The SYCL engine, Control, GPU vision encoder and runtimes are included.
 3. Choose a supported Qwen model and its storage folder, let it download, then chat.
 
@@ -121,8 +121,13 @@ strata update
 strata --version
 ```
 
-Stop models first. The next Terminal command uses the updated Control component. The app, Control and engine have
-separate version numbers, so they can differ.
+With a model loaded, `strata update` says which model, asks before it stops it, downloads the new engine while the model keeps
+serving, stops it cleanly, updates, and asks whether to start it again with the same settings (answer no and it stays stopped;
+the start line is printed). If the update fails the old engine stays in use and the model can be started again. The launch
+monitor and the start screen show one quiet line when a newer engine is available; press `u` in the monitor to update.
+In a script nothing is asked: `--yes` alone never stops a model (exit 7, nothing changed); `--stop-model` lets the update stop it
+and `--start-again` starts it again afterwards (exit 8 if it did not start again). The next Terminal command uses the updated
+Control component. The app, Control and engine have separate version numbers, so they can differ.
 
 Use `strata components rollback` to return to the previous engine. See [update details](../packaging/UPDATES.md).
 Source checkouts have a [separate update workflow](SOURCE_INSTALL.md#updating).

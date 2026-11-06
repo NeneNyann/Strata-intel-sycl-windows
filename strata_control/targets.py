@@ -9,6 +9,8 @@ from __future__ import annotations
 import platform
 import re
 
+from strata_control import sysinfo
+
 
 class ComponentError(RuntimeError):
     """A component could not be used. The message names the reason and nothing was changed."""
@@ -91,10 +93,12 @@ def match_intel_devices(devices, *, device_id=None, name=None, uuid=None, pci_ad
 
 def host_platform() -> str:
     """This machine as an `os-arch` key, matching `BACKEND_MATRIX`."""
-    system = {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(platform.system())
+    # sysinfo, not platform: on Windows `platform.system()` and `.machine()` query WMI with no timeout, and a stuck winmgmt
+    # froze every command that resolves the engine (#4975)
+    system = {"Darwin": "macos", "Linux": "linux", "Windows": "windows"}.get(sysinfo.system())
     if system is None:
-        raise ComponentError(f"unsupported operating system: {platform.system()}")
-    machine = platform.machine().lower()
+        raise ComponentError(f"unsupported operating system: {sysinfo.system()}")
+    machine = sysinfo.machine().lower()
     arch = {"arm64": "arm64", "aarch64": "arm64",
             "x86_64": "x86_64", "amd64": "x86_64"}.get(machine, machine)
     if system == "linux" and arch == "arm64":

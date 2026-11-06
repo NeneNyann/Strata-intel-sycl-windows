@@ -3,6 +3,7 @@
 #include <dpct/dpct.hpp>
 #include "strata/sycl_queue.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/kernels/dflash2.hpp"
 #if defined(_WIN32)
 #include <intrin.h>
 #endif
@@ -53,6 +54,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <stdexcept>
 #include <immintrin.h>
 
 namespace strata::core {
@@ -296,11 +298,15 @@ Verifier::~Verifier() try {
     if (cs_) cs_->wait();
     for (auto& e : exec_)
         if (e) delete (e);
+    for (auto& window : segments_)
+        for (auto* segment : window) delete segment;
     if (commit_exec_) delete (commit_exec_);
-    if (cs_) dpct::get_current_device().destroy_queue(cs_);
+    if (cs_ && cs_ != &dpct::get_in_order_queue()) dpct::get_current_device().destroy_queue(cs_);
     if (copy_) {
-        copy_->wait(); dpct::get_current_device().destroy_queue(copy_);
+        copy_->wait();
+        if (copy_ != &dpct::get_in_order_queue()) dpct::get_current_device().destroy_queue(copy_);
     }
+    if (tap_dev_) sycl::free(tap_dev_, dpct::get_in_order_queue());
     if (arena_) sycl::free(arena_, dpct::get_in_order_queue());
     void* hosts[] = {h_tok_, h_step_, h_pos_, h_commit_, h_ple_, h_out_, h_x_, h_ids_, h_w_, h_seq_, h_flag_, h_ymiss_,
                      h_flagA_, h_plan_, h_flagB_};
@@ -393,6 +399,19 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
               mapped(64, (void**) &h_flagB_, (void**) &m_flagB_) &&
               mapped(T * K * N * 4, (void**) &h_ymiss_, (void**) &m_ymiss_);
     if (!ok) { err = "verify: mapped staging allocation failed"; return false; }
+    // DFlash2 taps (set_taps): off, and nothing is allocated or recorded, otherwise
+    if (!tap_req_.empty() && lb_ == 0 && le_ == g.n_layers) {
+        tap_layers_.clear();
+        for (int l : tap_req_) if (l >= 0 && l < g.n_layers - 1) tap_layers_.push_back(l);
+        tap_slot_.assign((size_t) g.n_layers, -1);
+        for (size_t i = 0; i < tap_layers_.size(); ++i) tap_slot_[(size_t) tap_layers_[i]] = (int) i;
+        const size_t nt = tap_layers_.size();
+        if (nt == 0 || (tap_dev_ = sycl::malloc_device<float>((size_t) T * nt * N, dpct::get_in_order_queue())) == nullptr) {
+            err = "verify: the DFlash2 tap buffers could not be allocated";
+            return false;
+        }
+        tap_on_ = true;
+    }
     // the GPU plan: counts(4) | start(cap+1) | dst(cap) | tok(cap) | pad | ptr(cap u64) | ptr2(cap u64) | start2(cap+1)
     {
         const int64_t cap = (int64_t) (T * K);
@@ -532,6 +551,24 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         const char* v = std::getenv("STRATA_VERIFY_DEVICE_PLAN");
         device_plan_ = v != nullptr && std::atoi(v) != 0;
     }
+    if (const char* v = std::getenv("STRATA_VERIFY_STEPPED")) stepped_ = *v && *v != '0';
+#ifdef _WIN32
+    else stepped_ = strata::intel_gpu_gen(cs_->get_device()) == strata::IntelGpuGen::Alchemist &&
+                    !env_on("STRATA_VERIFY_NO_HOST");
+#endif
+    if (stepped_) {
+        if (env_on("STRATA_VERIFY_NO_HOST") || std::getenv("STRATA_VERIFY_EAGER") != nullptr) {
+            err = "verify: stepped windows require command graphs and the CPU expert path";
+            return false;
+        }
+        device_plan_ = false;
+        std::fprintf(stderr, "strata verify: stepped windows; CPU experts served between graph segments\n");
+        const auto dev = cs_->get_device();
+        std::fprintf(stderr, "strata verify: host USM %d, system USM %d, maximum device allocation %.2f GiB\n",
+                     (int) dev.has(sycl::aspect::usm_host_allocations),
+                     (int) dev.has(sycl::aspect::usm_system_allocations),
+                     (double) dev.get_info<sycl::info::device::max_mem_alloc_size>() / 1073741824.0);
+    }
     if (device_plan_) {
         bool ok2 =
             DPCT_CHECK_ERROR(skip_ = (uint32_t *)sycl::malloc_device(
@@ -554,6 +591,10 @@ bool Verifier::init(const WeightTable &wt, const ModelGeometry &g,
         functionality is redundant in SYCL.
         */
         if (!ok2) {; device_plan_ = false; }
+    }
+    if (env_on("STRATA_VERIFY_NO_HOST") && !device_plan_) {
+        err = "verify: STRATA_VERIFY_NO_HOST requires a working device plan";
+        return false;
     }
     if (std::getenv("STRATA_VERIFY_DEBUG") != nullptr) {   // include speculative rows in the per-layer ladder
         dbgR_ = (float*) sycl::malloc_device((size_t) g.n_layers * max_t_ * g.n_embd * 4, dpct::get_in_order_queue());
@@ -918,8 +959,13 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
                                    m_ids_ + tb * K, m_w_ + tb * K, m_seq_, (uint32_t) ((l - lb_) * G + grp + 1), cs);
         else
 #endif
-        doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
-                         m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
+        if (stepped_) {
+            copy_from_mapped(m_x_ + tb * N, xm, (int64_t) n * N, cs);
+            copy_i32_from_mapped(m_ids_ + tb * K, ids_ + tb * K, (int64_t) n * K, cs);
+            copy_from_mapped(m_w_ + tb * K, w_ + tb * K, (int64_t) n * K, cs);
+        } else
+            doorbell_publish(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
+                             m_ids_ + tb * K, m_w_ + tb * K, m_seq_, cs);
         stamp(l, 17, grp);
         {
             const WeightRef *wgi = need(v, "ffn_gate_inp_shexp.weight", err), *wsg = need(v, "ffn_gate_shexp.weight", err),
@@ -958,7 +1004,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         } else
             quantize_q8_0_scaled(xm, hit_xq_ + (size_t) tb * (N / 32) * 34, hit_xs_ + (size_t) tb * (N / 32), (int64_t) n * N, cs);
         stamp(l, 18, grp);
-        return true;
+        return !step_hook_ || step_hook_(l, grp);
     };
 
     // ---------------------------------------------------------------- post(l, group): experts, combine
@@ -971,7 +1017,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             wait_flag_ge_or(m_flagA_, ring, skip_ + grp, cs);
             copy_i32_from_mapped_unless(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, skip_ + grp, ring, cs);
         } else {
-            wait_flag_ge(m_flagA_, ring, cs);                  // the pool published this group's GPU plan
+            if (!stepped_) wait_flag_ge(m_flagA_, ring, cs);
             copy_i32_from_mapped(pl, m_plan_ + (size_t) grp * (size_t) plan_i32_, plan_i32_, cs);
         }
         stamp(l, 19, grp);
@@ -1003,7 +1049,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
         grouped(p_ptr, p_start, p_counts, 0);
         stamp(l, 20, grp);
         if (device_plan_) wait_flag_ge_or(m_flagB_, ring, skip_ + grp, cs);
-        else wait_flag_ge(m_flagB_, ring, cs);                 // the PCIe share is in staging (DMA) or mapped
+        else if (!stepped_) wait_flag_ge(m_flagB_, ring, cs);
         if (sink_.pcie_mode == 2) {                            // stage it with a copy kernel, then point at staging
             const int64_t per = G == 2 ? kStagingBlobs / 2 : kStagingBlobs;
             uint8_t* stage = staging_ + (size_t) (grp * per) * lay.max_blob;
@@ -1020,7 +1066,7 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             copy_or_zero_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (long long) n * K * N,
                                      skip_ + grp, ring, cs);
         } else {
-            wait_flag_ge(m_flag_, ring, cs);               // the CPU's share is in the mapped rows
+            if (!stepped_) wait_flag_ge(m_flag_, ring, cs);
             stamp(l, 23, grp);
             if (dec_batch)   // only the CPU rows cross PCIe (p_dst[0, counts[1]) = the GPU's own rows)
                 copy_rows_from_mapped(parts_ + (size_t) tb * K * N, m_ymiss_ + (size_t) tb * K * N, (int64_t) n * K, N,
@@ -1040,6 +1086,13 @@ bool Verifier::record_window(int T, dpct::queue_ptr cs, std::string &err) {
             if (!moe_combine_parts(g, l, K, mb, parts_ + (size_t) t * K * N, bo_ + t * N, cs, err)) return false;
         }
         stamp(l, 24, grp);
+        if (tap_on_ && l < (int64_t) tap_slot_.size() && tap_slot_[(size_t) l] >= 0) {
+            // the layer's completed output: R with this FFN half's write applied (the next layer's read would fold it), the mean of the hc streams,
+            // all rows of the group in one launch
+            const int64_t nt = (int64_t) tap_layers_.size();
+            strata::kernels::df2_tap_gr(Rt(tb), HC * N, bo_ + tb * N, N, inj2_ + tb * HC, HC, tap_dev_ + ((size_t) tb * nt + (size_t) tap_slot_[(size_t) l]) * N,
+                                        nt * N, n, N, (int) HC, cs);
+        }
         if (l == g.n_layers - 1) {
             for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
             if (cvec().covers(l)) cvec_apply(Rt(tb), l, n, HC * N, nullptr, 0, nullptr, 0, false, cs);
@@ -1153,7 +1206,50 @@ std::string Verifier::profile_report() {
     return out;
 }
 
+bool Verifier::capture_segments(int T, std::string& err) {
+    if (!segments_[T].empty()) return true;
+    dpct::experimental::command_graph_ptr graph = nullptr;
+    bool recording = false;
+    auto finish = [&] {
+        dpct::experimental::end_recording(cs_, &graph);
+        recording = false;
+        if (graph == nullptr) throw std::runtime_error("segment capture produced no graph");
+        auto* executable = new sycl::ext::oneapi::experimental::command_graph<
+            sycl::ext::oneapi::experimental::graph_state::executable>(graph->finalize());
+        delete graph;
+        graph = nullptr;
+        segments_[T].push_back(executable);
+    };
+    try {
+        dpct::experimental::begin_recording(cs_);
+        recording = true;
+        step_hook_ = [&](int64_t layer, int group) {
+            finish();
+            segment_at_[T].push_back({layer, group});
+            dpct::experimental::begin_recording(cs_);
+            recording = true;
+            return true;
+        };
+        const bool ok = record_window(T, cs_, err);
+        step_hook_ = nullptr;
+        finish();
+        if (ok) return true;
+    } catch (const std::exception& e) {
+        err = std::string("verify: segment capture: ") + e.what();
+    }
+    step_hook_ = nullptr;
+    if (recording) {
+        try { dpct::experimental::end_recording(cs_, &graph); } catch (...) {}
+    }
+    delete graph;
+    for (auto* segment : segments_[T]) delete segment;
+    segments_[T].clear();
+    segment_at_[T].clear();
+    return false;
+}
+
 bool Verifier::capture(int T, std::string &err) try {
+    if (stepped_) return capture_segments(T, err);
     if (exec_[T] != nullptr) return true;
     if (std::getenv("STRATA_VERIFY_EAGER") != nullptr) return true;   // SYCL port: no graph, run() replays the body
     if (DPCT_CHECK_ERROR(dpct::experimental::begin_recording(cs_)) != 0) {
@@ -1398,7 +1494,47 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
         const bool first_or_gap = t_prev_end.time_since_epoch().count() == 0 || (t_launch - t_prev_end) > std::chrono::milliseconds(20);
         if (wmode == 1 || (wmode == 2 && first_or_gap)) dpct::get_current_device().queues_wait_and_throw();
     }
-    const dpct::err0 le = (std::getenv("STRATA_VERIFY_EAGER") != nullptr)
+    if (stepped_) {
+        const int Gs = groups_[T] > 0 ? groups_[T] : 1;
+        for (size_t i = 0; i < segments_[T].size(); ++i) {
+            if (released_.load()) { err = "verify: stepped window cancelled (#267)"; return false; }
+            const int64_t layer_at = i < segment_at_[T].size() ? segment_at_[T][i].first : le_;
+            progress_at("verify window: waiting for GPU segment of layer", layer_at);
+            trace_ev("SEGMENT-SUBMIT", (int64_t) i, layer_at, T);
+            const auto ta = Clock::now();
+            cs_->ext_oneapi_graph(*segments_[T][i]);
+            cs_->wait_and_throw();
+            trace_ev("SEGMENT-DONE", (int64_t) i, layer_at, T);
+            ms_wait += ms_since(ta);
+            if (i >= segment_at_[T].size()) continue;
+            const auto [layer, grp] = segment_at_[T][i];
+            const uint32_t want = (uint32_t) ((layer - lb_) * Gs + grp + 1);
+            cur_layer_ = want - 1;
+            set_plan_slot(grp);
+            const int tb = grp == 0 ? 0 : (T + 1) / 2;
+            const int te = Gs == 2 && grp == 0 ? (T + 1) / 2 : T;
+            progress_at("verify window: the CPU experts of layer", layer);
+            const auto tp = Clock::now();
+            if (pool != nullptr)
+                pool(user, h_x_ + (size_t) tb * g.n_embd, h_ids_ + (size_t) tb * ss.k, te - tb, ss.k,
+                     h_ymiss_ + (size_t) tb * ss.k * g.n_embd, layer);
+            if (*(volatile uint32_t*) h_flagA_ != want) {
+                sink_.counts[0] = sink_.counts[1] = sink_.counts[2] = 0;
+                sink_.start[0] = sink_.start2[0] = 0;
+            }
+            copy_->wait_and_throw();
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            _mm_sfence();
+            if (g_test_stall > 0 && windows + 1 == g_test_stall && i + 1 == segment_at_[T].size()) {
+                err = "verify (stepped): test withheld the last layer's CPU results";
+                return false;
+            }
+            ms_pool += ms_since(tp);
+            trace_ev("SEGMENT-SERVED", (int64_t) i, layer, te - tb);
+            progress_tick();
+        }
+    }
+    const dpct::err0 le = stepped_ ? 0 : (std::getenv("STRATA_VERIFY_EAGER") != nullptr)
                               ? (record_window(T, cs_, err) ? 0 : 1)   // SYCL port: eager replay of the window body
                               : DPCT_CHECK_ERROR((cs_)->ext_oneapi_graph(*exec_[T]));
     /*
@@ -1432,7 +1568,7 @@ bool Verifier::run(int T, const int32_t *tokens, int64_t pos0, PoolMultiFn pool,
     static const bool no_host = [] { const char* v = std::getenv("STRATA_VERIFY_NO_HOST"); return v && *v && std::strcmp(v, "0") != 0; }();
     const int64_t steps = (le_ - lb_) * G;
     const bool test_stall = g_test_stall > 0 && windows + 1 == g_test_stall;   // #267 test hook (off: false)
-    for (int64_t k = 0; !no_host && k < steps; ++k) {
+    for (int64_t k = 0; !stepped_ && !no_host && k < steps; ++k) {
         const int64_t l = lb_ + k / G;
         const int grp = (int) (k % G);
         const uint32_t want = (uint32_t) (k + 1);

@@ -150,6 +150,15 @@ class Computer:
         return None
 
     @property
+    def rx7000_card(self) -> bool:
+        """Is a usable AMD card an RX 7000 (gfx1100, gfx1101, gfx1102)?  DeepSeek has a package for those cards since the 0.2.9 update, built and not run on a real one."""
+        from strata_control import engine_component as ec, gpu_fit
+        for c in gpu_fit.usable_cards(gpu_fit.for_vendor(self.gpus, self.engine_vendor)[0])[0]:
+            if c.get("vendor") == "amd" and (str(c.get("arch") or "") or ec.gfx_from_name(str(c.get("name", "")))) in ("gfx1100", "gfx1101", "gfx1102"):
+                return True
+        return False
+
+    @property
     def main_vram_gb(self) -> float:
         return max((float(g.get("vram_gb") or 0) for g in self.usable_gpus), default=0.0)
 
@@ -198,23 +207,50 @@ def install_root(explicit: str | os.PathLike | None = None, src: str | os.PathLi
 INTEL_ARC = {"0x56a1": ("Arc A750", 8.0), "0x56a2": ("Arc A580", 8.0), "0x56a0": ("Arc A770", 8.0), "0x56a5": ("Arc A380", 6.0),
              "0x56a6": ("Arc A310", 4.0), "0x5690": ("Arc A770M", 16.0), "0xe20b": ("Arc B580", 12.0), "0xe20c": ("Arc B570", 10.0),
              "0xe223": ("Arc Pro B70", 32.0), "0xe222": ("Arc Pro B65", 32.0), "0xe221": ("Arc Pro B60", 24.0), "0xe211": ("Arc Pro B60", 24.0),
-             "0xe212": ("Arc B50", 16.0)}
+             "0xe212": ("Arc Pro B50", 16.0)}
+
+
+#: PCI id ranges of Intel's discrete cards, for a model that is not in the table above (a new Battlemage or Alchemist part): such a card is counted as an
+#: Arc of the family's smallest memory, never named by model. The processors' own graphics (0x46xx, 0x7dxx, 0xa7xx, ...) are outside these ranges.
+INTEL_ARC_FAMILIES = ((0x5690, 0x56c1, 8.0), (0xe200, 0xe2ff, 10.0))
+
+
+def _arc_entry(did: str) -> tuple[str, float] | None:
+    if did in INTEL_ARC:
+        return INTEL_ARC[did]
+    try:
+        value = int(did, 16)
+    except ValueError:
+        return None
+    for low, high, gb in INTEL_ARC_FAMILIES:
+        if low <= value <= high:
+            return "Arc", gb
+    return None
 
 
 def intel_arc_cards(root: str = "/sys/class/drm") -> list[dict]:
-    """The Intel Arc cards on this Linux computer, read from the kernel's device list (empty elsewhere)."""
+    """The Intel Arc cards on this Linux computer, read from the kernel's device list (empty elsewhere). One unreadable entry or a card number
+    above 9 never hides the others, and the cards of other makes beside them (an AMD APU's graphics) do not matter here (#4971, #5111)."""
     cards: list[dict] = []
     try:
-        for dev in sorted(Path(root).glob("card[0-9]/device")):
-            if (dev / "vendor").read_text().strip() != "0x8086":
+        entries = sorted(Path(root).glob("card[0-9]*"), key=lambda p: (len(p.name), p.name))
+    except OSError:
+        return cards
+    for card in entries:
+        if "-" in card.name:                                 # a connector (card0-DP-1), not a card
+            continue
+        dev = card / "device"
+        try:
+            if (dev / "vendor").read_text().strip().lower() != "0x8086":
                 continue
             did = (dev / "device").read_text().strip().lower()
-            if did not in INTEL_ARC:
-                continue
-            name, gb = INTEL_ARC[did]
-            cards.append({"vendor": "intel", "name": "Intel " + name, "vram_gb": gb, "usable": True, "index": len(cards)})
-    except OSError:
-        pass
+        except OSError:
+            continue
+        entry = _arc_entry(did)
+        if entry is None:
+            continue
+        name, gb = entry
+        cards.append({"vendor": "intel", "name": "Intel " + name, "vram_gb": gb, "usable": True, "index": len(cards)})
     return cards
 
 
@@ -260,10 +296,13 @@ class Catalog:
             return hw
         hw = dict(self.strata.hardware(fresh=fresh))
         hw["gpus"] = self._admit_old_nvidia(list(hw.get("gpus") or []))
-        if not hw.get("gpus") and not str(hw.get("os", "")).startswith("Windows"):
+        if not str(hw.get("os", "")).startswith("Windows"):
             arc = intel_arc_cards()
             if arc:
-                hw["gpus"] = arc                       # the shared hardware reader knows NVIDIA and AMD only; an Arc is added here
+                # the shared hardware reader knows NVIDIA and AMD only; an Arc is added here, also beside other makes (the plan then says the
+                # Intel cards exist and how to use them: --backend intel); their numbers are the Intel engine's own (0, 1, ...)
+                have = list(hw.get("gpus") or [])
+                hw["gpus"] = have + arc
         return hw
 
     @staticmethod
@@ -305,9 +344,16 @@ class Catalog:
     def engine_vendor(self, hw: dict | None = None) -> str | None:
         """The make of card the engine drives: the installed engine's; with none installed, the engine setup would fetch (NVIDIA first when the
         computer has several makes)."""
-        from strata_control import gpu_fit
+        from strata_control import engine_component as ec, gpu_fit
         hw = hw if hw is not None else self.hardware()
-        return gpu_fit.pick_vendor(list(hw.get("gpus") or []), self.installed_backend())
+        chosen = None
+        try:
+            backend, how = ec.detect_backend()
+            if how in ("environment", "saved choice"):          # the person's own choice (--backend, STRATA_ENGINE_BACKEND) beats the installed engine
+                chosen = backend
+        except Exception:                                      # noqa: BLE001
+            pass
+        return gpu_fit.pick_vendor(list(hw.get("gpus") or []), chosen or self.installed_backend())
 
     # ---- the tables
     def tables(self):
@@ -343,6 +389,11 @@ class Catalog:
                     recommended=(rec.get("family") == fam["family"] and rec.get("model") == size["model"])))
         return out
 
+    def own_files_verdict(self, hw: dict | None, model: str) -> tuple[str, str]:
+        """DeepSeek-V4.1-Flash with the person's own files used where they are (--model-path): nothing is downloaded or copied, so the disk
+        part of the menu row (which counts the whole download of a set that is not in Strata's folder) does not apply: the memory words alone."""
+        return verdict(self.strata._dsv41_memory_words(hw or self.hardware(), model))
+
     def resolve(self, model: str, family: str | None = None) -> tuple[str, str]:
         """`iq3_xxs` or `IQ3_XXS` (and an optional family) -> (family, model); raises ValueError with the closest match."""
         models, families, _ctx, _src = self.tables()
@@ -364,6 +415,8 @@ class Catalog:
             return family, match
         if not offered:
             raise ValueError(f"{match} is not offered by any model family here.")
+        if len(offered) > 1 and "deepseek41" in offered:     # UD-IQ1_M is Unsloth's name in two families (round 0214): the bare name stays DeepSeek's, as it was; the Qwen set is --family unsloth
+            return "deepseek41", match
         return ("qwen" if "qwen" in offered else offered[0]), match
 
     def tag_of(self, family: str, model: str) -> str:
@@ -396,36 +449,15 @@ class Catalog:
         return tokens * 13 * table.get(kv, 1056) / 1e9
 
     def max_context(self, family: str, model: str, hw: dict | None = None) -> int | None:
-        """The recommended context for this computer and model (setup.py: VRAM rule, then the RAM rule)."""
+        """The context a model starts with: 128K on every card, or the largest size the model offers under it (strata_control/default_context.py,
+        the one rule of the app, the Terminal and setup). A Mac keeps its unified-memory rule."""
+        from strata_control import default_context
         hw = hw or self.hardware()
         if hw.get("mac") and hw.get("ram_gb"):                 # a Mac: the context by unified memory (strata_control/mac_fit.py)
             mac = self.strata.mac()
             if mac is not None:
                 return int(mac.recommend_context(float(hw["ram_gb"])))
-        usable = [g for g in hw.get("gpus") or [] if g.get("usable", True)]
-        vram = max((float(g.get("vram_gb") or 0) for g in usable), default=12.0)
-        rec = 32768 if vram < 14 else 65536 if vram < 20 else 131072
-        if usable and all(g.get("vendor") == "intel" for g in usable):
-            rec = 8192 if vram < 10 else 16384 if vram < 20 else 32768       # an Arc keeps the session and the experts in the same memory
-        mod = self.strata.setup_module()
-        models = self.tables()[0]
-        if mod is not None and models[model].get("budget"):
-            try:
-                if mod.unsloth_budget(model, hw.get("ram_gb") or 0.0):
-                    rec = 8192 if vram < 14 else 32768
-            except Exception:                                  # noqa: BLE001
-                pass
-        if mod is not None and hasattr(mod, "ram_ctx") and hw.get("ram_gb"):
-            try:
-                rec = min(rec, int(mod.ram_ctx(model, hw["ram_gb"], False)))
-            except Exception:                                  # noqa: BLE001
-                pass
-        if usable:                                             # 0.2.2: a model a few hundred MiB short on this card gets the next context down
-            from strata_control import vram_fit
-            best = max(usable, key=lambda g: float(g.get("vram_gb") or 0))
-            rec = vram_fit.fit_context(f"{family} {model}", float(best.get("vram_gb") or 0), rec, "int8", 300,
-                                       str(best.get("vendor") or ""))
-        return rec
+        return default_context.pick(self.contexts())
 
     # ---- pictures
     def engine_backend(self) -> str | None:

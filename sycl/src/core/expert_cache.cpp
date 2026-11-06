@@ -642,19 +642,10 @@ bool ExpertCache::open(int64_t n_slots, int64_t n_layers, int64_t n_expert,
         // (an Arc A750 caps one allocation at 4 GiB unless UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1)
         base_ = nullptr;
         char buf[256];
-        std::snprintf(
-            buf, sizeof buf, "ExpertCache: cudaMalloc(%.2f GiB) failed: %s",
-            /*
-            DPCT1009: SYCL reports errors using exceptions and does not use
-            error codes. Please replace the "get_error_string_dummy(...)" with a
-            real error-handling function.
-            */
-            /*
-            DPCT1010: SYCL uses exceptions to report errors and does not
-            use the error codes. The cudaGetLastError function call was replaced
-            with 0. You need to rewrite this code.
-            */
-            (double)want / 1073741824.0, dpct::get_error_string_dummy(0));
+        const auto limit = dpct::get_in_order_queue().get_device().get_info<sycl::info::device::max_mem_alloc_size>();
+        std::snprintf(buf, sizeof buf,
+                      "ExpertCache: device allocation of %.2f GiB failed (reported single-allocation limit %.2f GiB)",
+                      (double) want / 1073741824.0, (double) limit / 1073741824.0);
         err = buf;
         return false;
     }

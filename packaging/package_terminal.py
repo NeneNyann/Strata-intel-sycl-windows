@@ -127,6 +127,8 @@ INSTALLER_FILES = ("setup.py", "ref/load.py", "sycl/setup_windows.py")   # ref/l
 INSTALLER_TOOLS = ("strata_mcp", "iq_pack", "strata_pack", "pack_index", "mtp_fetch", "mtp_pack", "mtp_rt", "draft_vocab",
                    "strata_tokenizer", "gguf_reader", "calibrate")
 INSTALLER_DATA = "data"           # draft vocabularies, expert profiles: 2 MB
+#: the Mac install's tools (setup.py's mac_control_setup runs them by path): Unsloth's many-shard sets become ONE GGUF for the Metal engine (stdlib only, 15 KB)
+INSTALLER_METAL_TOOLS = ("metal_repack", "stream_experts")
 
 #: packages the bundle must import after the install (the API server's and the CLI's).
 PROBE = "import jinja2, yaml, regex, psutil, requests, numpy, PIL, tqdm; print('deps ok')"
@@ -283,6 +285,10 @@ def add_installer(folder: Path, source: Path = ROOT) -> dict:
     for name in tools:
         shutil.copy2(source / "tools" / f"{name}.py", folder / "tools" / f"{name}.py")
         copied.append(f"tools/{name}.py")
+    (folder / "metal" / "tools").mkdir(parents=True, exist_ok=True)
+    for name in INSTALLER_METAL_TOOLS:
+        shutil.copy2(source / "metal" / "tools" / f"{name}.py", folder / "metal" / "tools" / f"{name}.py")
+        copied.append(f"metal/tools/{name}.py")
     if (folder / INSTALLER_DATA).exists():
         shutil.rmtree(folder / INSTALLER_DATA)
     shutil.copytree(source / INSTALLER_DATA, folder / INSTALLER_DATA, ignore=shutil.ignore_patterns("__pycache__"))

@@ -1701,7 +1701,8 @@ bool FileExpertSource::pin_cache_complement(
                     const char* v = std::getenv("STRATA_PARTIAL_PIN_GIB");
                     return (uint64_t) ((v != nullptr && std::atof(v) > 0 ? std::atof(v) : 24.0) * 1073741824.0);
                 }();
-                if (budget_bytes > 0 && partial_on) {
+                if (budget_bytes > 0 && partial_on &&
+                    sycl::get_pointer_type(arena, dpct::get_in_order_queue().get_context()) == sycl::usm::alloc::host) {
                     const uint64_t step = 2ull << 30;
                     for (uint64_t want = std::min(bytes, pin_cap); want >= step; want = want > step ? want - step : 0) {
                         // cut at an expert boundary: a blob that started inside the registered range and ran past it

@@ -33,6 +33,7 @@
 #include <atomic>
 #include <cstdint>
 #include <chrono>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -70,6 +71,12 @@ public:
     /// paths that give up on the engine (a timed-out window, the serve watchdog): the window then ran on whatever
     /// the flags guarded, so this verifier refuses every later window.  True when the streams finished.
     bool release_gpu_waits(int timeout_ms);
+
+    /// DFlash2 taps (the CUDA verifier's contract): before init(), the zero-based layers whose completed output the drafter reads.  Each window then leaves
+    /// tap_dev() = [max_t][n_taps][n_embd] floats (the mean of the hc streams after the layer's FFN write), valid until the next window.  Single-stage only.
+    void set_taps(const std::vector<int>& layers) { tap_req_ = layers; }
+    const float* tap_dev() const { return tap_dev_; }
+    bool tapping() const { return tap_on_; }
 
     /// `max_t` <= kVerifyMaxT.  `head` may be null (the canonical head is then run per token).
     bool init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
@@ -171,7 +178,13 @@ public:
     std::string profile_report();
 
 private:
+    bool tap_on_ = false;
+    std::vector<int> tap_req_;
+    std::vector<int> tap_layers_;
+    std::vector<int> tap_slot_;
+    float* tap_dev_ = nullptr;
     bool capture(int T, std::string& err);
+    bool capture_segments(int T, std::string& err);
     strata::kernels::SamplerParams sampling_ = [] {
         strata::kernels::SamplerParams s;
         s.greedy = true;
@@ -184,6 +197,10 @@ private:
     int device_ = -1;                    ///< the device `init` ran on: run/commit switch to it (layer split)
     std::atomic<bool> released_{false};  ///< #267: release_gpu_waits ran (maybe on the watchdog thread): no more windows
     bool device_plan_ = false;            ///< E-6: resident-only layers planned on the device (STRATA_VERIFY_DEVICE_PLAN)
+    bool stepped_ = false;
+    std::function<bool(int64_t, int)> step_hook_;
+    std::vector<dpct::experimental::command_graph_exec_ptr> segments_[9];
+    std::vector<std::pair<int64_t, int>> segment_at_[9];
     uint32_t* skip_ = nullptr;            ///< E-6: per group, the ring whose plan the device built (0: the host's)
     unsigned long long* slot_off_d_ = nullptr;   ///< E-6: the slot offsets on the device
     int64_t lb_ = 0, le_ = -1;           ///< set_stage: the layers this verifier runs (-1: to the last)

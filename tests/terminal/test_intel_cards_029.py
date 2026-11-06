@@ -41,10 +41,8 @@ class IntelCards(unittest.TestCase):
         self.assertEqual(len(self.cards(["0x7d55", "0xe222"])), 1)       # an iGPU beside a B65: one card
 
     def test_both_tables_list_the_same_discrete_ids(self):
-        import ast
-        src = (ROOT / "sycl" / "setup_intel.py").read_text(encoding="utf-8")
-        node = next(n for n in ast.parse(src).body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "INTEL_ARC")
-        theirs = {"0x" + k: v[0].replace("Arc ", "") for k, v in ast.literal_eval(node.value).items()}
+        from sycl.setup_intel import INTEL_ARC
+        theirs = {"0x" + k: v[0].replace("Arc ", "") for k, v in INTEL_ARC.items()}
         ours = {k: v[0].replace("Arc ", "") for k, v in C.INTEL_ARC.items()}
         self.assertEqual(set(theirs), set(ours))
         self.assertEqual({k: v.replace(" ", "") for k, v in theirs.items()}, {k: v.replace(" ", "") for k, v in ours.items()})
