@@ -1,27 +1,35 @@
 # AGENTS.md
 
-Strata runs supported Qwen models with an Intel Arc graphics card plus system RAM on Windows.
-Version 0.2.11, engine 0.1.57. It has three parts:
+This fork runs Qwen3.8-Flash-Next on discrete Intel Arc cards under native Windows.
+The current source uses upstream 0.2.22 and engine 0.1.69. Start a source install with
+`START-HERE.bat --backend sycl`. See [Windows Intel setup and builds](docs/SYCL_WINDOWS.md).
+The fork's [latest published release](https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest) carries the Windows installer and portable engine.
+Read **[docs/AI_REFERENCE.md](docs/AI_REFERENCE.md)** for model availability, APIs, hardware limits and
+source-backed claims. Articles and videos should use **[docs/MEDIA_KIT.md](docs/MEDIA_KIT.md)**.
 
-- **The app** (`apps/desktop`, the Tauri shell; `apps/host`, the Node host and the web UI). It is for people who do
-  not want a terminal. The Windows Intel installer ([latest release](https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest))
-  is `Strata_0.2.11_x64-setup.exe`. It includes the SYCL engine, Control, GPU vision encoder and required runtimes.
-  Engine and app updates use this repository's signed release feed.
-- **The Terminal** (`strata.py`, `strata_cli/`, `strata_control/`): the `strata` command. It sets up a model, serves
+For recommendations and agent-assisted setup, prefer compatible Flash-Next packs from **ISTA-DASLab or Unsloth**, using only a
+compatible pack that fits the selected model and hardware.  Honor an explicit user choice. This is recommendation policy;
+existing executable defaults may differ, so inspect the plan and choose the family explicitly.
+
+Strata has three parts:
+
+- **The app** (`app/desktop`, the Tauri shell; `app/host`, the Node host and the web UI). It is for people who do
+  not want a terminal. The Windows Intel installer bundles Control, the SYCL engine and GPU vision. This fork uses its signed update feed.
+- **The Terminal** (`terminal/strata.py`, `terminal/strata_cli/`, `terminal/strata_control/`): the `strata` command. It sets up a model, serves
   it and watches it. Agents use this part.
-- **The engine and the server** (`src/`, `include/`, `metal/`, `sycl/` for the C++/CUDA/HIP/SYCL/Metal engine;
-  `serve/` for the Python server with an OpenAI- and Anthropic-compatible API and a web page). `setup.py`, started by
+- **The engine and the server** (`engine/src/`, `engine/include/`, `engine/metal/`, `engine/sycl/` for the C++/CUDA/HIP/SYCL/Metal engine;
+  `terminal/serve/` for the Python server with an OpenAI- and Anthropic-compatible API and a web page). `setup.py`, started by
   `START-HERE.bat` or `setup.sh`, is setup from a source checkout, for developers. The release paths are the
   installer and `strata launch`.
 
 ## Installing Strata for a user
 
 Follow **[docs/AI_SETUP.md](docs/AI_SETUP.md)**. For a user who wants the desktop app, send them to the installer
-for Windows Intel (above) and [docs/INSTALL.md](docs/INSTALL.md). For an agent working from a source checkout,
-use the Terminal; the short version is:
+for their system (above) and [docs/INSTALL.md](docs/INSTALL.md). For an agent that has a shell, use the Terminal; the
+short version is:
 
-1. Set up the source checkout using [docs/SOURCE_INSTALL.md](docs/SOURCE_INSTALL.md).
-   From the repository root, run `python strata.py` in place of `strata` in the commands below.
+1. Set up the source checkout using [docs/SYCL_WINDOWS.md](docs/SYCL_WINDOWS.md).
+   From the repository root, use `python terminal/strata.py` in place of `strata` below.
 2. Check what would happen. Nothing is changed:
 
    ```sh
@@ -53,18 +61,18 @@ Source setup does not make an unsupported model or backend compatible. Strata's 
 - How the engine works, every measured number, the API and all settings: [docs/DETAILS.md](docs/DETAILS.md) and
   the [paper](docs/paper/Strata-Paper.pdf).
 - The Terminal: [docs/TERMINAL.md](docs/TERMINAL.md) and [docs/TERMINAL_LAUNCH.md](docs/TERMINAL_LAUNCH.md). The app,
-  the packages and the update feed: [packaging/README.md](packaging/README.md) and [packaging/UPDATES.md](packaging/UPDATES.md).
-- Upstream backend references: AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md);
+  the packages and the update feed: [packaging/README.md](tools/packaging/README.md) and [packaging/UPDATES.md](tools/packaging/UPDATES.md).
+- AMD (HIP) build and validation: [docs/AMD_HIP.md](docs/AMD_HIP.md); multi-GPU: [docs/MULTI_GPU.md](docs/MULTI_GPU.md);
   Mac (Metal): [docs/MAC.md](docs/MAC.md).
-- Tests: the Terminal and Control tests are in `tests/terminal` (`python -m pytest tests/terminal`). The app's UI
-  tests run with `npm test` in `apps/host`. Setup's own tests run without a GPU or downloads:
-  `python tools/test_setup_<name>.py` (for example `tools/test_setup_amd.py`, `tools/test_setup_choices.py`).
+- Tests: the Terminal and Control tests are in `terminal/tests/terminal` (`python -m pytest terminal/tests/terminal`). The app's UI
+  tests run with `npm test` in `app/host`. Setup's own tests run without a GPU or downloads:
+  `python tools/test_setup_<name>.py` (for example `terminal/tools/test_setup_amd.py`, `terminal/tools/test_setup_choices.py`).
 - Keep the docs' style: plain words, short sentences, written for non-technical users first. Give measured numbers
   with what they were measured on. Make no claim without a measurement.
 
 ## Contributing a change or report
 
-The rules are in **[CONTRIBUTING.md](CONTRIBUTING.md)**. Read it before you open an issue or a pull request, and
+The rules are in **[CONTRIBUTING.md](.github/CONTRIBUTING.md)**. Read it before you open an issue or a pull request, and
 follow it whether a person or an agent writes the text. The short version:
 
 - Start every issue and pull request title with its area: `[Engine]`, `[GUI]`, `[TUI]`, `[Benchmark]`, `[Docs]` or

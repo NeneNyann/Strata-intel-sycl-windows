@@ -32,7 +32,7 @@ Install Visual Studio C++ desktop tools, Intel oneAPI DPC++/C++ Compiler and one
 From the repository root:
 
 ```bat
-sycl\build-release-windows.bat
+engine\sycl\build-release-windows.bat
 ```
 
 Output: `dist/strata-windows-x64-sycl.zip`. To install the locally built package:
@@ -43,14 +43,14 @@ START-HERE.bat --backend sycl --prebuilt dist
 
 ## Benchmark
 
-Measured on **2026-10-30** with engine **0.1.54** and the following local configuration. These results use full RAM expert
+Measured on **2026-11-26** with engine **0.1.69** (commit `d8f11a799`) and the following local configuration. These results use full RAM expert
 residency and fixed expert-cache budgets and prefill chunks. Only the current build was run in this test.
 
 ### Test environment
 
 | Component | Configuration |
 |---|---|
-| GPU | Intel Arc B580, 12 GB; driver 32.0.101.9150 |
+| GPU | Intel Arc B580, 12 GB; driver 32.0.101.9175 |
 | CPU | Core i7-14700K, all cores |
 | RAM | 64 GB DDR4-3600 CL16; 16-20-20-38, tRC 58, CR 1T |
 | Model | Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS |
@@ -58,7 +58,7 @@ residency and fixed expert-cache budgets and prefill chunks. Only the current bu
 
 ### Test parameters
 
-All four cases used these arguments, with the context capacity changed to 8192 or 131072:
+All four cases used these arguments, with the context capacity set to 8192 or 131072:
 
 ```text
 --serve
@@ -67,14 +67,14 @@ All four cases used these arguments, with the context capacity changed to 8192 o
 --ple-gguf <Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS-00002-of-00002.gguf>
 --expert-profile <expert-profile.bin>
 --resident-experts --expert-cache <budget from the table below>
---prefill <chunk from the table below> --max-context 131072
+--prefill <chunk from the table below> --max-context <capacity>
 --kv int8 --kv-resident 20480
 --spec 4 --spec-min-p 0.5 --mtp <mtp/rt directory>
 --pcie-frac 0.37 --vram-reserve-mib <reserve below> --pool-workers 19
 ```
 
 Environment: `ONEAPI_DEVICE_SELECTOR=level_zero:0`, `STRATA_RESIDENT_PIN=0`,
-`STRATA_VERIFY_DEVICE_PLAN=1`, `STRATA_STAGE_PIN=0`. The CPU pool used 19 workers plus the host thread. The MTP draft vocabulary was
+`STRATA_VERIFY_DEVICE_PLAN=1`, `STRATA_STAGE_PIN=0`, `STRATA_SPIN_MAX=2000000`. The CPU pool used 19 workers plus the host thread. The MTP draft vocabulary was
 the existing CJK set (106,299 tokens); the draft head occupied 137.9 MiB and the MTP layer about 802 MiB at 8K and 835 MiB at 128K.
 
 **No `--resident-budget-gib` limit was set.** The engine copied the full non-VRAM expert complement
@@ -100,25 +100,24 @@ Startup/model loading is excluded. These are short-prompt measurements at two co
 
 | Case | Context capacity | First prefill (tok/s) | First decode (tok/s) | Repeat 1 (tok/s) | Repeat 2 (tok/s) |
 |---|---:|---:|---:|---:|---:|
-| Text only | 8,192 | 206.60 | **42.16** | **46.26** | **42.86** |
-| GPU vision loaded | 8,192 | 210.73 | **39.18** | **42.97** | **42.70** |
-| Text only | 131,072 | 378.82 | **46.30** | **48.89** | **47.56** |
-| GPU vision loaded | 131,072 | 279.17 | **42.23** | **45.57** | **48.47** |
+| Text only | 8,192 | 280.17 | **45.74** | **48.44** | **47.83** |
+| GPU vision loaded | 8,192 | 250.50 | **40.30** | **43.98** | **42.59** |
+| Text only | 131,072 | 409.71 | **46.02** | **51.80** | **50.59** |
+| GPU vision loaded | 131,072 | 468.20 | **44.29** | **51.50** | **47.59** |
 
 ### Fixed allocation
 
 The requested expert-cache budgets were 3043 (text 8K), 2262 (vision 8K), 3612 (text 128K) and
 3049 (vision 128K). This option budgets largest-expert blobs; it is not the final number of slots.
-The driver checked the final engine-reported slot count, expert VRAM and resident expert RAM
-against the table before generating. The 8K cases explicitly used `--no-prefill-borrow`; 128K used
+The driver checked the fixed slot count and expert VRAM before generating and recorded the actual resident expert RAM and prefill loan. The 8K cases explicitly used `--no-prefill-borrow`; 128K used
 `--prefill-borrow`. No cache or prefill size was selected by `auto` in the main four sessions.
 
 | Case / capacity | VRAM expert slots | Expert VRAM (GiB) | Resident expert RAM (GiB) | Prefill chunk | Slots / GiB available to prefill loan | Loaded free VRAM (MiB) |
 |---|---:|---:|---:|---:|---|---:|
-| Text only, 8,192 | 3179 | 4.28 | 28.74 | 1024 | 0 / 0 | 1994 |
-| GPU vision loaded, 8,192 | 2358 | 3.18 | 29.84 | 1024 | 0 / 0 | 1930 |
-| Text only, 131,072 | 3780 | 5.08 | 31.50 | 8192 | 2662 / 3.56 | 1285 |
-| GPU vision loaded, 131,072 | 3186 | 4.29 | 32.30 | 8192 | 2655 / 3.56 | 890 |
+| Text only, 8,192 | 3179 | 4.28 | 28.74 | 1024 | 0 / 0 | 1970 |
+| GPU vision loaded, 8,192 | 2358 | 3.18 | 29.84 | 1024 | 0 / 0 | 1928 |
+| Text only, 131,072 | 3780 | 5.08 | 31.21 | 8192 | 2448 / 3.27 | 1305 |
+| GPU vision loaded, 131,072 | 3186 | 4.29 | 32.01 | 8192 | 2440 / 3.27 | 948 |
 
 The prefill loan temporarily reuses expert-cache VRAM for prompt buffers; its GiB are part of the
 expert-cache total, not an additional permanent allocation. The 8K cases used 1024-token chunks with
@@ -126,7 +125,7 @@ their own buffers; both 128K cases used fixed 8192-token chunks and borrowed cac
 difference, along with different cache sizes, means a larger configured capacity can be faster for
 this short prompt; it does not mean longer prompts are faster.
 
-The text-only 128K cache budget leaves 1285 MiB free after loading. These VRAM figures report
+The text-only 128K cache budget leaves 1305 MiB free after loading. These VRAM figures report
 allocations, not proof that WDDM keeps every allocation in dedicated physical VRAM.
 
 At 128K, INT8 KV streaming kept 20,480 cells per QSA layer in VRAM and allocated **1.55 GiB of pinned
@@ -141,28 +140,28 @@ file sizes or treated as interchangeable measurements of RAM.
 
 | Case / capacity | Engine max private (GiB) | Engine peak working set (GiB) | Vision max private (GiB) | Minimum free physical RAM during Benchy (GiB) |
 |---|---:|---:|---:|---:|
-| Text only, 8,192 | 40.04 | 51.20 | 0.00 | 20.09 |
-| GPU vision loaded, 8,192 | 40.04 | 52.77 | 1.52 | 19.12 |
-| Text only, 131,072 | 45.30 | 52.44 | 0.00 | 19.07 |
-| GPU vision loaded, 131,072 | 45.30 | 52.81 | 1.52 | 20.00 |
+| Text only, 8,192 | 39.41 | 55.16 | 0.00 | 25.44 |
+| GPU vision loaded, 8,192 | 39.41 | 52.15 | 1.28 | 22.74 |
+| Text only, 131,072 | 44.39 | 54.00 | 0.00 | 20.20 |
+| GPU vision loaded, 131,072 | 44.39 | 55.16 | 1.27 | 19.69 |
 
-Loading briefly reduced available physical RAM to 0.00 GiB; the minimum available system commit across these sessions was 29.23 GiB.
+Minimum available physical RAM across the four sessions was 0.00 GiB. Minimum available system commit was 29.46 GiB.
 The remaining RAM during decode is not evidence of a partial expert cache: loading peaks and other
 allocations need headroom, and the measured requests did not read experts from disk. These timings
 do not establish that Windows performed no paging.
 
 | Case / capacity | Decode expert-cache hit range | MTP accepted / offered range | Two-second live peak (tok/s) |
 |---|---:|---:|---:|
-| Text only, 8,192 | 57.8–59.8% | 75.3–82.0% | 53.0 |
-| GPU vision loaded, 8,192 | 49.6–52.6% | 74.9–79.0% | 48.0 |
-| Text only, 131,072 | 62.0–66.7% | 72.9–76.2% | 56.5 |
-| GPU vision loaded, 131,072 | 58.0–60.0% | 73.9–78.8% | 55.5 |
+| Text only, 8,192 | 55.7–62.1% | 75.8–79.4% | 56.5 |
+| GPU vision loaded, 8,192 | 49.8–52.0% | 72.9–78.6% | 51.0 |
+| Text only, 131,072 | 59.9–65.5% | 75.3–78.1% | 61.0 |
+| GPU vision loaded, 131,072 | 55.2–60.1% | 74.7–78.1% | 58.5 |
 
 All Benchy requests reached the 256-token cap (`finish=length`); none stopped early, and no generated
 12-token sequence repeated within a response. Cache swaps, PCIe work and MTP acceptance can change
 outputs and speed between requests. The live two-second rate can exceed the whole-decode average.
 
-### Tool prompt
+### Historical tool prompt (2026-10-12)
 
 The same 1,233-token prompt containing IDA tool definitions was tested on 2026-10-12 in the 128K + vision session after Benchy, using temperature
 0.6, top-p 0.95, top-k 20 and seed 42, with a 256-token output cap. The repeat reused 1,228 tokens.
@@ -176,25 +175,25 @@ This measures generation with tool definitions in the prompt, **not tool executi
 
 ### API benchmark
 
-`tools/strata_bench.py` suite 1: three runs per test, temperature 0, thinking off, concurrency 1.
+`terminal/tools/strata_bench.py` suite 1: three runs per test, temperature 0, thinking off, concurrency 1.
 Same model and environment as above, with 65,536-token context capacity and GPU vision loaded.
 Expert-cache budget 3049, prefill 8192, reserve 256 MiB, 19 CPU workers and 20,480 resident KV cells.
-The actual cache held 3,186 slots / 4.29 GiB in VRAM and 32.23 GiB in RAM; the prefill loan was 2,607 slots / 3.50 GiB.
+The actual cache held 3,186 slots / 4.29 GiB in VRAM and 31.94 GiB in RAM. The prefill loan was 2,392 slots / 3.21 GiB.
 Speeds are engine-reported; TTFT is measured client-side. Values are medians with ranges.
 
 | Workload | Prompt tokens | Runs | Prefill (tok/s) | Decode (tok/s) | TTFT (s) |
 |---|---:|---:|---|---|---|
-| Short chat | 43–51 | 9 | — | **37.4** (34.3–47.3) | 0.71 (0.64–0.77) |
-| 4K fresh prompt | 4,019 | 3 | **725.6** (722.6–734.9) | — | 5.57 (5.52–5.60) |
-| 16K fresh prompt | 16,058 | 3 | **898.7** (895.6–899.2) | — | 17.94 (17.91–18.00) |
-| Agent session, six turns | 14,798 at the last turn | 3 | — | **43.5** (33.9–51.0) | 6.15 (4.44–7.92) |
+| Short chat | 43–51 | 9 | — | 39.3 (35.5–47.4) | 0.75 (0.66–0.80) |
+| 4K fresh prompt | 4,019 | 3 | 1050.8 (1024.8–1055.7) | — | 3.86 (3.84–3.96) |
+| 16K fresh prompt | 16,058 | 3 | 1412.4 (1395.9–1417.4) | — | 11.43 (11.37–11.55) |
+| Agent session, six turns | 14,684 at the last turn | 3 | — | 46.6 (37.6–53.0) | 4.79 (3.48–5.54) |
 
-Agent follow-up cache hit rate was 65.6%; earlier-turn tokens re-read per session were 73 (3–143).
+Agent follow-up cache hit rate was 65.5%. Earlier-turn tokens re-read per session were 1 (0–73). The agent workload reads documents from the measured checkout.
 Output caps were 100 tokens for chat, 24 for fresh prompts and 64 per agent turn.
 
-### WebUI writing
+### Historical WebUI writing (2026-10-30)
 
-The latest completed user-run WebUI writing request on 2026-10-30, on the same PC and model, with MCP tools and vision
+A user-run WebUI writing request on engine 0.1.54 on 2026-10-30, on the same PC and model, with MCP tools and vision
 turned off. Context capacity was 131,072; the actual prompt was short and reused no tokens.
 
 | Input tokens | Generated tokens | Prompt time | Prefill (tok/s) | Decode time | Decode (tok/s) |

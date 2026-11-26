@@ -1,15 +1,15 @@
 # Install Strata
 
-This page is for anyone installing or updating Strata (version 0.2.11). Use the **desktop app** for a graphical
-interface, or use a source checkout for the **Terminal** and coding tools. The Windows Intel desktop installer includes
-the engine and runtimes; a desktop install does not need a source checkout or a startup `.bat` file.
+This page is for anyone installing or updating Strata (version 0.2.22). Use the **desktop app** for a graphical
+interface, or the **Terminal** for `strata launch` and coding tools. Both use released engine packages. A normal
+install does not need a source checkout or a startup `.bat` file.
 
 ## Quick start
 
 | I want | Do this |
 | --- | --- |
-| A window with chat | Download the installer from the [latest release](https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest) ([steps](#the-app)) |
-| The terminal, or my coding tool | Use a source checkout, then `python strata.py launch` ([steps](#the-terminal)) |
+| A window with chat | Download the installer from the [latest release](https://github.com/Niko1221/Strata/releases/latest) ([steps](#the-app)) |
+| The terminal, or my coding tool | Run the one-line install, then `strata launch` ([steps](#the-terminal)) |
 
 [Requirements](#what-you-need) · [Desktop app](#the-app) · [Terminal](#the-terminal) ·
 [Update](#updating) · [Files and folders](#where-things-are-stored) · [Build from source](SOURCE_INSTALL.md)
@@ -18,10 +18,10 @@ the engine and runtimes; a desktop install does not need a source checkout or a 
 
 | Computer | Guide |
 | --- | --- |
-| Windows 10/11 or Linux x86-64 with an NVIDIA RTX GPU | Use the app or the Terminal. The engine for your card is downloaded for you. [Older NVIDIA cards](OLDER_GPUS.md) use the CUDA 12 engine. DeepSeek V4.1-Flash runs on RTX 30, 40 and 50 cards in the app and the Terminal. |
-| Windows or Linux x86-64 with a supported AMD Radeon | [AMD guide](AMD_HIP.md), including the card-to-package table. DeepSeek V4.1-Flash runs on the Radeon AI PRO R9700 under Linux, in the app and the Terminal. |
-| Windows 10/11 or Linux x86-64 with Intel Arc | [Intel Arc guide](INTEL_ARC.md); install the driver/compute runtime and check model preparation requirements |
-| Apple Silicon Mac, macOS 15 or newer | [Mac guide](MAC.md). Intel Macs are not supported by the Mac package. |
+| Windows 10/11 or Linux x86-64 with an NVIDIA RTX GPU | Use the app or the Terminal. The engine for your card is downloaded for you. [Older NVIDIA cards](OLDER_GPUS.md) use the CUDA 12 engine. |
+| Windows or Linux x86-64 with a supported AMD Radeon | [AMD guide](AMD_HIP.md), including the card-to-package table. |
+| Linux x86-64 with Intel Arc | [Intel Arc guide](INTEL_ARC.md); install the driver/compute runtime and check model preparation requirements |
+| Apple Silicon Mac, macOS 15 or newer | [Mac guide](MAC.md). macOS 15 is supported; on it the Qwen engine reads prompts more slowly (about 10x on our measurement) because a macOS 26 feature is off. Intel Macs are not supported by the Mac package. |
 | AMD Ryzen AI Max / Strix Halo | [Strix Halo guide](STRIX_HALO.md) |
 | NVIDIA DGX Spark (Linux ARM64) | [DGX Spark guide](DGX_SPARK_LINUX.md). Use the Terminal; there is no desktop app for ARM64 Linux. |
 
@@ -35,13 +35,21 @@ hardware drivers. Models and updates need an internet connection to download.
 
 ## The app
 
-1. Open the [latest release](https://github.com/NeneNyann/Strata-intel-sycl-windows/releases/latest).
-2. Run `Strata_0.2.11_x64-setup.exe` on Windows with an Intel Arc GPU. It installs for your user and needs no
-   administrator rights. The SYCL engine, Control, GPU vision encoder and runtimes are included.
-3. Choose a supported Qwen model and its storage folder, let it download, then chat.
+1. Open the [latest release](https://github.com/Niko1221/Strata/releases/latest).
+2. Download the one installer for your system. There is one per system, not one per graphics card:
+   - **Windows:** run `Strata-0.2.22-windows-x64-setup.exe`. It installs for your user and needs no administrator rights.
+   - **Linux:** make `Strata-0.2.22-linux-x86_64.AppImage` executable, then open it. If FUSE is unavailable, run the
+     downloaded file with `--appimage-extract-and-run`. [Linux help](TROUBLESHOOTING.md).
+   - **Mac:** open `Strata-0.2.22-macos-arm64.dmg`, drag Strata into Applications, then open it. [Mac help](MAC.md).
+3. On Windows and Linux the installer has no engine inside. On first start the app shows the engine for your
+   graphics card with its size and one **Download** button, with progress and resume. If you already downloaded the
+   engine file, choose **I already have the file** and it installs without internet. The Mac file keeps its small
+   Metal engine inside.
+4. Choose a model and its storage folder, let it download, then chat.
 
-`strata-windows-x64-sycl.zip` is the signed engine component, not the desktop installer. The installer is the same
-file for a first install and for an update.
+The `strata-engine-…` and `strata-control-…` archives on the release page are components, not installers. The
+installer is the same file for a first install and for an update. There is no Intel desktop installer yet; Intel Arc
+runs on Linux only, through the [Terminal](INTEL_ARC.md).
 
 The first launch can take time to check and prepare large model files. Watch its progress and logs; there is no fixed
 startup time for every model or computer. Closing the desktop app stops its managed engine.
@@ -51,49 +59,36 @@ Current app recommendations can differ; choose the model explicitly when you wan
 
 ## The Terminal
 
-Use a [source checkout](SOURCE_INSTALL.md). From the repository root, run `python strata.py` in place of
-`strata` in the commands on this page:
+Install once, then use `strata launch`. The Terminal includes Python and downloads the engine for your computer.
+
+**Linux / Mac**
 
 ```sh
-python strata.py launch
+curl -fsSL --connect-timeout 15 --max-time 120 https://github.com/Niko1221/Strata/releases/latest/download/install.sh -o install.sh && sh install.sh
+```
+
+**Windows PowerShell**
+
+```powershell
+irm -TimeoutSec 120 https://github.com/Niko1221/Strata/releases/latest/download/install.ps1 | iex
+```
+
+On Windows, open a **new terminal** afterwards. On Linux and Mac, if `strata` is not found, use the full path printed
+by the installer (normally `~/.local/bin/strata`) or add that folder to your shell's PATH.
+
+```sh
+strata launch
 ```
 
 Follow the screens to choose a model, context, storage folder and access settings. The monitor opens after startup.
 Use the address printed by Strata; the default local endpoint is `http://127.0.0.1:8080`.
 The Terminal opens a browser only when you add `--open`.
 
-For a script or AI agent, inspect a plan before downloading, for example:
+For a script or AI agent, inspect a plan before downloading. This example selects ISTA-DASLab Q2_0 explicitly:
 
 ```sh
-python strata.py launch --plan --family qwen --model q2_0
-```
-
-## From source: Windows
-
-1. [Download this project](https://github.com/NeneNyann/Strata-intel-sycl-windows/archive/refs/heads/main.zip) and unzip it (or
-   `git clone` it).
-2. Double-click **`START-HERE.bat`**.
-3. Answer a few questions - or just press Enter each time for the recommended choice ([the questions](#setups-questions)).
-
-Then it downloads everything (the model is ~70 GB, so the first time takes a while - you can stop and it picks up
-where it left off) and **starts the model**. Your browser opens the Strata app at `http://127.0.0.1:8080`.
-
-> **While the model starts, your PC can be slow or stop responding for 1-3 minutes** (longest the first time): Strata
-> loads 35-55 GB into your RAM and locks part of it for the graphics card. That's normal - wait, and don't close the
-> window. The window tells you what it is doing.
-
-**Next time**, just double-click `START-HERE.bat` again: it starts right away (30-90 s to load the model), nothing is
-downloaded twice. Close its window to stop the model. `SETUP.bat` (the same as `START-HERE.bat --setup`) installs
-another model or changes the settings. Starting Strata from Task Scheduler at logon needs two task settings, or the
-start is 24x slower: [Running it at startup](DETAILS.md#running-it-at-startup-task-scheduler).
-
-**Intel Arc on Windows:** use `START-HERE.bat --backend sycl`.
-See [Windows Intel setup](SYCL_WINDOWS.md) for requirements, images and source builds.
-
-## From source: Linux
-
-```bash
-./setup.sh
+strata launch --family qwen --model q2_0 --plan
+strata launch --family qwen --model q2_0 --yes --no-tui
 ```
 
 `--no-tui` leaves the server running in the background. Check it, connect a tool, or stop it:
@@ -129,7 +124,7 @@ In a script nothing is asked: `--yes` alone never stops a model (exit 7, nothing
 and `--start-again` starts it again afterwards (exit 8 if it did not start again). The next Terminal command uses the updated
 Control component. The app, Control and engine have separate version numbers, so they can differ.
 
-Use `strata components rollback` to return to the previous engine. See [update details](../packaging/UPDATES.md).
+Use `strata components rollback` to return to the previous engine. See [update details](../tools/packaging/UPDATES.md).
 Source checkouts have a [separate update workflow](SOURCE_INSTALL.md#updating).
 
 ## Where things are stored

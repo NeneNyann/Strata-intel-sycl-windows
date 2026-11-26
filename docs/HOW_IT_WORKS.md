@@ -3,7 +3,7 @@
 Models like Qwen3.8-Flash-Next normally run on servers with hundreds of gigabytes of graphics memory. Your graphics
 card has 12-24 GB. Strata makes it fit by **sharing the work across your whole PC** - the same idea as a kitchen, where
 the things you use all the time stay on the counter and the rest waits in the pantry. Back to the
-[README](../README.upstream.md#how-does-it-work).
+[README](../README.md#how-does-it-work).
 
 ## Who does what
 
@@ -71,7 +71,7 @@ The [details](DETAILS.md#how-it-works) explain every part and its numbers, and t
 
 ## License
 
-Strata is open source under the [MIT License](../LICENSE). A few parts carry their own licenses: `third_party/ggml`
+Strata is open source under the [MIT License](../LICENSE). A few parts carry their own licenses: `engine/third_party/ggml`
 (MIT, llama.cpp / ggml), the web app's font (SIL Open Font License 1.1) and the experimental speed projection's
-vector in `data/experimental-speed-projection` (Qwen Community License 1.0, from the model's activations). The
+vector in `terminal/data/experimental-speed-projection` (Qwen Community License 1.0, from the model's activations). The
 models are not part of this repository; each model's own license applies to its files.

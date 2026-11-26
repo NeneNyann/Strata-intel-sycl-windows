@@ -1,6 +1,6 @@
 # Strata — Windows Intel Arc SYCL
 
-English | [简体中文](README.zh-CN.md)  
+English | [简体中文](README.zh-CN.md)
 
 A personal fork of [Niko1221/Strata](https://github.com/Niko1221/Strata) for running Qwen3.8-Flash-Next on
 **Intel Arc GPUs under native Windows**. It retains Strata's WebUI, OpenAI / Anthropic APIs and MCP tools,
@@ -38,24 +38,24 @@ See [MCP tools](docs/DETAILS.md#tools-from-mcp-servers) for MCP configuration an
 
 ## Performance
 
-Measured on 2026-10-30 with engine 0.1.54: Arc B580 12 GB, Core i7-14700K, 64 GB DDR4-3600 CL16
+Measured on 2026-11-26 with engine 0.1.69: Arc B580 12 GB, Core i7-14700K, 64 GB DDR4-3600 CL16
 (16-20-20-38, tRC 58, CR 1T), Qwen3.8-Flash-Next GSQ-RCO IQ2_XS,
 INT8 KV and MTP spec 4. Full RAM expert residency, fixed expert-cache budgets and prefill chunks, all CPU cores;
 no RAM budget limit. Benchy v1: 2,185 input tokens, 256 output tokens, greedy.
 
 | Case | Context capacity | First decode | Repeated decode |
 |---|---:|---:|---:|
-| Text only | 8K | **42.16 tok/s** | **42.86–46.26 tok/s** |
-| GPU vision loaded | 8K | **39.18 tok/s** | **42.70–42.97 tok/s** |
-| Text only | 128K | **46.30 tok/s** | **47.56–48.89 tok/s** |
-| GPU vision loaded | 128K | **42.23 tok/s** | **45.57–48.47 tok/s** |
+| Text only | 8K | **45.74 tok/s** | **47.83–48.44 tok/s** |
+| GPU vision loaded | 8K | **40.30 tok/s** | **42.59–43.98 tok/s** |
+| Text only | 128K | **46.02 tok/s** | **50.59–51.80 tok/s** |
+| GPU vision loaded | 128K | **44.29 tok/s** | **47.59–51.50 tok/s** |
 
 128K is the configured capacity; these tests used short prompts. Repeats reused 2,182 input tokens.
-In a WebUI writing session with 128K context capacity, MCP tools and vision off, a 24-token prompt
+In the October 30 WebUI writing session on engine 0.1.54 with 128K context capacity, MCP tools and vision off, a 24-token prompt
 generated 7,144 tokens at **38.2 tok/s**.
 
-`tools/strata_bench.py` (64K, GPU vision loaded, three runs, medians): short-chat decode **37.4 tok/s**,
-4K / 16K prefill **725.6 / 898.7 tok/s**, agent TTFT **6.15 s**.
+`terminal/tools/strata_bench.py` (64K, GPU vision loaded, three runs, medians): short-chat decode **39.3 tok/s**,
+4K / 16K prefill **1050.8 / 1412.4 tok/s**, agent TTFT **4.79 s**.
 
 See [Windows SYCL benchmarks](docs/SYCL_WINDOWS.md#benchmark) for full parameters, actual expert RAM/VRAM,
 prefill allocation and tool-prompt results.
@@ -66,7 +66,7 @@ Install Visual Studio C++ desktop tools, Intel oneAPI DPC++/C++ Compiler, oneMKL
 then run:
 
 ```bat
-sycl\build-release-windows.bat
+engine\sycl\build-release-windows.bat
 ```
 
 Output: `dist/strata-windows-x64-sycl.zip`. To install the locally built package:

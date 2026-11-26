@@ -6,13 +6,9 @@ build the engine from source, and which cards were tested. The port's workflow a
 
 maxfridbe wrote the port in [#423](https://github.com/Niko1221/Strata/pull/423). The code is in `sycl/`. Intel Arc is an
 official platform since 0.1.40.2. The maintainers test on an Arc Pro B70 (32 GB, `xe` driver) and an Arc A750 (8 GB, `i915`
-driver); results from other cards are community reports. The Mac build has no Intel engine.
+driver); results from other cards are community reports. The Mac and Windows builds have no Intel engine.
 
-**Windows:** use `START-HERE.bat --backend sycl`; the release package includes the runtimes and GPU image encoder.
-See [Windows installation](SYCL_WINDOWS.md). **Linux:** build from source using this page.
-The upstream Linux Docker image is `ghcr.io/niko1221/strata:0.2.0-sycl`; see [Docker: Intel Arc](DOCKER.md#intel-arc).
-
-**Where the engine comes from.** On Linux, `strata update` (Terminal) and Settings > Update (app) download the Intel engine package, `linux-x86_64-sycl`, for a PC whose graphics card is made by Intel, when the release feed lists one (`strata update --check` shows what it would install). One package serves Alchemist (A-series) and Battlemage (B-series) cards: the GPU code is compiled from SPIR-V at the first start, because the A-series cards have no FP64 units and the engine's FP64 kernels cannot be built ahead of time for them. It carries oneAPI's runtime libraries; the Level Zero loader and the compute runtime stay the PC's own (see "What you need" below), and the user must be in the `render` group (`strata doctor` says so). The package is built by `packaging/build_sycl_linux.sh`. It was tested on an Arc A750 only. This fork ships the native Windows Intel engine and GPU vision encoder; see [SYCL_WINDOWS.md](SYCL_WINDOWS.md). The Docker route is a ready-made image, `ghcr.io/niko1221/strata:0.2.3-sycl`, which is published only for a release that carries a Linux Intel engine package; with none, [build the image yourself](DOCKER.md#build-it-yourself) from the engine you built (the image needs prepared model files; see [Docker: Intel Arc](DOCKER.md#intel-arc)). The Mac build has no Intel engine.
+## Quick start
 
 Install the [Terminal](INSTALL.md#the-terminal), then point `strata launch` at the folder that holds the model's `.gguf` files
 (the Qwen3.8-Flash-Next files from ISTA-DASLab, for example IQ3_S or IQ2_XS):
@@ -23,8 +19,7 @@ strata launch --model-path /path/to/the/gguf/folder
 ```
 
 The first launch does everything itself: it downloads the Intel engine package `linux-x86_64-sycl` from the signed feed, builds the
-pack for your model from the GGUF files (a few minutes, once; it fetches llama.cpp's `gguf-py` helper from GitHub by itself, so it needs
-internet that one time), writes the run settings and starts the server. Nothing is installed by hand.
+pack for your model from the GGUF files (a few minutes, once), writes the run settings and starts the server. Nothing is installed by hand.
 
 - **A PC with an NVIDIA or AMD card as well** uses that card by default, and `--plan` says the Intel cards exist. To use the Intel cards
   add `--backend intel` once: the choice is remembered (in the settings file) for the next launch, `strata update` and the app's engine
@@ -39,31 +34,13 @@ whose graphics card is made by Intel. One package serves Alchemist and Battlemag
 first start, because the A-series cards have no FP64 units. The package carries oneAPI's runtime libraries. The Level Zero
 loader and the compute runtime stay the PC's own (see [What you need](#what-you-need)), and your user must be in the `render`
 group (`strata doctor` says so). It was tested on an Arc A750 and, in 0.2.10, on two Arc Pro B65 cards. The package is built by
-`packaging/build_sycl_linux.sh`.
+`tools/packaging/build_sycl_linux.sh`.
 
 The source and container workflow ([INTEL.md](INTEL.md#setup)) still exists for building the engine yourself; the Terminal does not need it.
 
-## What was tested here (0.1.39)
-
-- **Compiles:** Ubuntu 24.04 (WSL2), Intel oneAPI DPC++ 2026.1.1 + oneMKL 2026.1. The whole `sycl/` project
-  builds with 0 errors: the `strata` engine plus all 157 targets (the kernel parity tests and benches). The build is
-  SPIR-V (JIT). The AOT build (`STRATA_SYCL_AOT`) was not built here, because it needs `ocloc`.
-- **Kernel parity tests on a CPU** (`ONEAPI_DEVICE_SELECTOR=opencl:cpu`, Intel's OpenCL CPU runtime, AMD Ryzen 5 7600):
-  14 of 25 pass. That is the same set that PR #423's own 0.1.38 port passes on that device: the failures are tight
-  float tolerances on the CPU's math (rel 3e-6 against a 1e-6 limit), model fixtures that are not present, and two
-  tests that time out on a CPU. This is a check that the kernels compile and compute, not a test of an Arc.
-- **Setup:** `--backend sycl` warns, then hands over to `sycl/setup_intel.py` on Linux (unit tests:
-  `tools/test_setup_sycl.py`).
-- **Unchanged:** the CUDA engine's greedy output, checked byte-identical against the gated 0.1.39 build (Q2_0 and Coder).
-  The HIP build is not affected (the option is off by default).
-
-**Not tested here:** Arc on WSL2, integrated Arc GPUs and Linux images. The upstream Alchemist A750 results are in [INTEL.md](INTEL.md). Native Windows vision checks from the previous release are documented in [SYCL_WINDOWS.md](SYCL_WINDOWS.md).
-
-**Upstream limits:** Arc on WSL2 for the 0.1.39 port, integrated Arc
-GPUs (the B390 / Panther Lake in #515; the shared-memory planning does not exist yet), and pictures on a Battlemage card
-(the first picture on the Arc Pro B70 reset the GPU; they are off by default there, [INTEL.md](INTEL.md#pictures-on-an-arc-2026-10-19-branch-f-021-arcvis)).
-Pictures work on the A750 (on by default, read on the CPU). The Alchemist A-series was tested later, on an A750 (rows above and
-[INTEL.md](INTEL.md), "Arc A750 and the other Alchemist cards").
+Docker: the ready-made image is `ghcr.io/niko1221/strata:0.2.3-sycl`, published only for a release that carries a Linux Intel
+engine package. Otherwise [build the image yourself](DOCKER.md#build-it-yourself). The image needs prepared model files
+([Docker: Intel Arc](DOCKER.md#intel-arc)).
 
 ## What you need
 
@@ -74,12 +51,11 @@ Pictures work on the A750 (on by default, read on the CPU). The Alchemist A-seri
   experts that do not fit on the card with AVX2 (measured on an A750 with a Ryzen 5 5600X, [INTEL.md](INTEL.md)). This applies to
   model folders that contain `native_experts.txt` (IQ3_XXS, IQ3_S, NVFP4, Unsloth). An older Q2_0 folder has no such file, and its
   CPU kernel needs AVX-512. With that folder the engine stops with "this CPU cannot run the expert kernel", and `strata doctor`
-  warns about it before the start. Building the model folder again with `strata setup` (or `tools/iq_pack.py`) fixes it.
-- For a source build without Docker: **Intel oneAPI** with the DPC++ compiler (`icpx`, 2025.3 or newer) and **oneMKL**
-  (about 5 GB), `cmake` 3.24+, `ninja`, `git`, Python 3. The build fetches ggml unless you point `STRATA_GGML_DIR` at a
-  llama.cpp checkout.
-- For `./setup.sh --backend sycl`: **Docker** and the GPU driver, nothing else from the list above. `sycl/setup_intel.py`
-  builds and runs the engine in the `strata-sycl-dev` image from `sycl/tools/Dockerfile`, which starts from a community
+  warns about it before the start. Building the model folder again with `strata setup` (or `terminal/tools/iq_pack.py`) fixes it.
+- For a source build without Docker: **Intel oneAPI** with the DPC++ compiler (`icpx`, **2026.1 or newer**; 2025.3 does not build the engine) and **oneMKL**
+  (about 5 GB), `cmake` 3.24+, `ninja`, `git`, Python 3.
+- For `./setup.sh --backend sycl`: **Docker** and the GPU driver, nothing else from the list above. `engine/sycl/setup_intel.py`
+  builds and runs the engine in the `strata-sycl-dev` image from `engine/sycl/tools/Dockerfile`, which starts from a community
   llama.cpp SYCL image (`ghcr.io/snailium/...`), not an Intel or Strata image. On Ubuntu:
   `sudo apt install docker.io git`, then `sudo usermod -aG docker,render $USER` and log in again.
 - VRAM: the port keeps the experts on the card (`--stream-experts`). A 32 GB card holds the Coder IQ1_M or IQ2_XS. Smaller
@@ -94,15 +70,15 @@ About 10 minutes the first time. From the checkout, called `Strata` here:
 
 ```sh
 cd Strata
-docker build --pull -t strata-sycl-dev sycl/tools     # once: about 6 minutes, a 13 GB image
+docker build --pull -t strata-sycl-dev engine/sycl/tools     # once: about 6 minutes, a 13 GB image
 H=$(basename "$PWD")
 # Arc B-series: bmg-g31 (Pro B70), bmg-g21 (B580, B570, Pro B60). Arc A-series (Alchemist): leave out AOT (JIT) and use build-sycl
 docker run --rm -u $(id -u):$(id -g) -v "$PWD/..:/work" -e AOT=bmg-g31 -e REPO=/work/$H \
-    -e BUILD_DIR=/work/$H/build-sycl-aot strata-sycl-dev "cd /work/$H && bash sycl/tools/build.sh strata"
+    -e BUILD_DIR=/work/$H/build-sycl-aot strata-sycl-dev "cd /work/$H && bash engine/sycl/tools/build.sh strata"
 ```
 
 `--pull` matters: [INTEL.md](INTEL.md#how-to-build-it) says why. Then run `./setup.sh --backend sycl`. Do not run
-`python3 sycl/setup_intel.py` by hand: on Ubuntu it fails with `externally-managed-environment`; `setup.sh` runs it in its own
+`python3 engine/sycl/setup_intel.py` by hand: on Ubuntu it fails with `externally-managed-environment`; `setup.sh` runs it in its own
 `.venv`.
 
 ## Build without Docker
@@ -123,8 +99,8 @@ Build the engine through the top-level CMake option or by configuring the `sycl/
 
 ```sh
 source /opt/intel/oneapi/setvars.sh
-cmake -S . -B build-sycl -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DSTRATA_ENABLE_SYCL=ON
-#   or: cmake -S sycl -B build-sycl -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx
+cmake -S engine -B build-sycl -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DSTRATA_ENABLE_SYCL=ON
+#   or: cmake -S engine/sycl -B build-sycl -G Ninja -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx
 cmake --build build-sycl --target strata
 ```
 
@@ -143,7 +119,7 @@ engine is at `build-sycl/sycl/strata`, so use `-S sycl` or set `STRATA_SYCL_BIN`
 ./setup.sh --backend sycl [setup's usual options, e.g. --model IQ2_XS --context 32768]
 ```
 
-Setup continues with `sycl/setup_intel.py`, which finds the Arc in sysfs, uses the SYCL engine you built, and writes the
+Setup continues with `engine/sycl/setup_intel.py`, which finds the Arc in sysfs, uses the SYCL engine you built, and writes the
 config and `run-<model>.sh`. On a card under 12 GB or an `i915` card (the A-series) it writes the small-card config
 ([INTEL.md](INTEL.md#arc-a750-and-the-other-alchemist-cards)). It downloads and packs the model the usual way. Windows has no
 path: `setup --backend sycl` on Windows stops and points here.
@@ -171,8 +147,8 @@ Things that matter on an Arc (details in [INTEL.md](INTEL.md)):
   `100% of the experts resident` lines. Set `STRATA_MIRROR_MIB=0` there, or the pinned mirror is allocated and not used.
 - **`setvars.sh` and `set -u`:** `source /opt/intel/oneapi/setvars.sh` in a shell with `set -u` stops at
   `OCL_ICD_FILENAMES: unbound variable` (oneAPI 2026.1.1). Source it before `set -u`.
-- **Without Docker:** `sycl/serve/strata-sycl.sh` needs Docker. Natively, `source setvars.sh`, export `SYCL_CACHE_PERSISTENT=0`,
-  `ZES_ENABLE_SYSMAN=1` and `STRATA_VERIFY_DEVICE_PLAN=1`, then run `build-sycl-aot/strata` or `sycl/serve/server_intel.py`
+- **Without Docker:** `engine/sycl/serve/strata-sycl.sh` needs Docker. Natively, `source setvars.sh`, export `SYCL_CACHE_PERSISTENT=0`,
+  `ZES_ENABLE_SYSMAN=1` and `STRATA_VERIFY_DEVICE_PLAN=1`, then run `build-sycl-aot/strata` or `engine/sycl/serve/server_intel.py`
   with an `exe` that does this. A normal user is not in the `render` group on Ubuntu, and then `sycl-ls` shows only the CPU.
 - `STRATA_VERIFY_NO_HOST=1` (set by `strata-sycl.sh` unless the config's `"env"` says otherwise) is needed on `xe` cards when part
   of the experts is not in VRAM, and is left off on the `i915` A-series ([INTEL.md](INTEL.md)). The config's `"env"` block and
@@ -189,7 +165,7 @@ Things that matter on an Arc (details in [INTEL.md](INTEL.md)):
 | Community | 2x Arc Pro B70, `--layer-split` | Flash-Next IQ3_XXS 66 tok/s decode, 394 tok/s prompt | #423 |
 | Community | Arc Pro B50 16 GB | Coder IQ1_M about 23 tok/s, IQ2_XS about 25-27 tok/s, up to 128K | #423 |
 | Community | Arc B580 12 GB, WSL2 | IQ2_XS about 21 tok/s, Coder about 15 tok/s; device loss also seen | #423 |
-| Community | 2x Arc Pro B60 24 GB, `--layer-split`, Ryzen 5 5600, 64 GB, PCIe 3.0 x8 per card | Coder IQ1_M: 56.6 tok/s decode, 428 tok/s prompt (2,129 tokens); Flash-Next IQ2_XS: 58.6-61.3 tok/s decode, 436 tok/s prompt; all experts in VRAM; 8K context | [report](../bench/results/2026-10-04-community-2x-arc-pro-b60/README.md) |
+| Community | 2x Arc Pro B60 24 GB, `--layer-split`, Ryzen 5 5600, 64 GB, PCIe 3.0 x8 per card | Coder IQ1_M: 56.6 tok/s decode, 428 tok/s prompt (2,129 tokens); Flash-Next IQ2_XS: 58.6-61.3 tok/s decode, 436 tok/s prompt; all experts in VRAM; 8K context | [report](bench-results/2026-10-04-community-2x-arc-pro-b60/README.md) |
 | Community | One Arc Pro B60 24 GB | Coder IQ1_M with 4,042 of 12,288 experts mirrored in RAM: 11.9 tok/s decode | same |
 | Maintainers | Arc Pro B70 32 GB (xe), 0.1.40.2 and later | Flash-Next IQ3_S with 11.5k of 24.6k experts resident: 10-prompt gate passes, prompt 980-1,000 tok/s on 4K tokens, decode 30 (prose) to 41 (code) tok/s | [INTEL.md](INTEL.md#arc-pro-b70-with-a-model-that-does-not-fit-flash-next-iq3_s) |
 | Maintainers | Arc A750 8 GB (i915) | Flash-Next IQ3_XXS about 10-19 tok/s decode | [INTEL.md](INTEL.md#arc-a750-and-the-other-alchemist-cards) |
@@ -198,17 +174,42 @@ Things that matter on an Arc (details in [INTEL.md](INTEL.md)):
 Two cards on `xe` (2x Arc Pro B70, IQ3_S, 0.1.44): `--layer-split auto` picked a split at about 11 tok/s where
 `--layer-split 30` ran about 54. The auto choice now prefers the split with the most VRAM headroom (above).
 
-**Not tested here:** Arc on WSL2 with the current engine, integrated Arc GPUs (the B390 /
-Panther Lake in #515; shared-memory planning does not exist), and pictures on a Battlemage card with a GPU reader. Pictures work
-on the A750 (on by default, read on the CPU). See [INTEL.md](INTEL.md#pictures-on-an-arc).
+**Not tested by anyone:** Windows (no native build path), Arc on WSL2 with the current engine, integrated Intel GPUs other than
+the Arc B390 (see [Integrated Arc GPUs](#integrated-arc-gpus-the-b390-panther-lake)), and pictures on a Battlemage card with a GPU
+reader. Pictures work on the A750 (on by default, read on the CPU). See [INTEL.md](INTEL.md#pictures-on-an-arc).
+
+## Integrated Arc GPUs: the B390 (Panther Lake)
+
+A GPU built into the processor, such as Panther Lake's Arc B390, has no memory of its own: what the engine calls VRAM is the PC's
+RAM. On Linux the engine plans such a GPU as one pool of memory with the system (#6448). Discrete cards are not affected.
+
+- **The cache is sized from the RAM.** The room is `MemAvailable`, plus the pages the GPU driver keeps pooled from an earlier
+  load (`GPUReclaim` in `/proc/meminfo`; a kernel that reports 0 there, as 7.0 did in #2412, adds nothing), less a headroom left
+  for the rest of the system (`STRATA_UMA_HEADROOM_GIB`, 6 GiB unless set). The start prints these figures in one line. Level
+  Zero's own free figure is not used on such a GPU.
+- **No second copy in the same RAM.** With `--expert-cache auto` there is no pinned mirror: the experts the cache cannot hold
+  are read from the file by the host (or, with `STRATA_VERIFY_NO_HOST`, refused, below). The prompt loan's mirror is off
+  (`STRATA_LEND_MIRROR=N` turns it on, with `STRATA_MIRROR_MIB` for its room when the cache is automatic). With a cache size
+  you give, the mirror gets the rest of the pool less `--vram-reserve-mib`. KV streaming is not turned on by itself.
+- **A model that does not fit is refused at once.** With `--stream-experts` and `STRATA_VERIFY_NO_HOST`, an automatic cache that
+  cannot hold every expert ends the start as soon as it is sized, with how many experts and GiB are short, instead of after
+  the fill.
+- `STRATA_UMA=0` plans the GPU as a card, as before; `STRATA_UMA=1` plans any GPU as one that shares the RAM.
+
+`./setup.sh --backend sycl` still stops at built-in graphics, so such a GPU runs from a run config written by hand.
+
+> **Measured on:** Arc Pro B390 (Panther Lake, 8086:b086, xe), Core Ultra X9 388H, 62 GiB LPDDR5X shared, Linux 7.2, compute
+> runtime 26.35, Swift 1.5 IQ3_XXS with `--expert-cache auto --stream-experts` at a 128K context. At each of three starts all
+> 24,576 experts were in one 39.97 GiB cache with no mirror, and at least 6.2 GiB of RAM stayed available. Decode: 26.3 tok/s on
+> a code prompt and 20.4 on the answer to a 6K prompt (19.1 and 13.3 before this planning, with a cache of 8,400-13,400 slots
+> and a 19-25 GiB mirror). A 6K prompt is read at about 335 tok/s, against about 394 before.
 
 ## Windows
 
-Use the native Windows release package with `START-HERE.bat --backend sycl`.
-Installation, images and source builds: [SYCL_WINDOWS.md](SYCL_WINDOWS.md).
-
-WSL2 with an Arc was used by one tester (the earlier B580 row above), but setup cannot detect the card there,
-because it reads `/sys/class/drm`, which WSL2 does not have.
+There is no Windows path. `setup --backend sycl` on Windows stops and points here. oneAPI exists for Windows, but
+`engine/sycl/CMakeLists.txt` uses GCC-style flags (`-mavx512f`, `-fp-model=precise`, `-qmkl`) and the runner is a bash/Docker script.
+Nobody has tried a native build. WSL2 with an Arc was used by one tester (the B580 row above), but setup cannot detect the card
+there, because it reads `/sys/class/drm`, which WSL2 does not have.
 
 ## Reporting a problem
 

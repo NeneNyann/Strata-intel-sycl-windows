@@ -1,6 +1,6 @@
 # Strata — Windows Intel Arc SYCL
 
-[English](README.md) | 简体中文  
+[English](README.md) | 简体中文
 
 这是 [Niko1221/Strata](https://github.com/Niko1221/Strata) 的自用 fork，主要用于在 **Windows 原生环境下使用 Intel Arc 显卡**运行 Qwen3.8-Flash-Next。保留原项目的 WebUI、OpenAI / Anthropic API 和 MCP 工具支持，加入 Windows SYCL 构建、GPU 图像编码及 release 安装包。
 
@@ -31,24 +31,24 @@ MCP 连接配置见 [MCP 工具说明](docs/DETAILS.md#tools-from-mcp-servers)�
 
 ## 性能
 
-2026-10-30 使用 engine 0.1.54 实测：Arc B580 12 GB、Core i7-14700K、64 GB DDR4-3600 CL16
+2026-11-26 使用 engine 0.1.69 实测：Arc B580 12 GB、Core i7-14700K、64 GB DDR4-3600 CL16
 （16-20-20-38、tRC 58、CR 1T），Qwen3.8-Flash-Next GSQ-RCO IQ2_XS，
 INT8 KV、MTP spec 4。完整 RAM 专家驻留、固定专家缓存预算与 prefill chunk、全核，无 RAM 预算上限。
 Benchy v1：2,185 输入、256 输出，greedy。
 
 | 场景 | 上下文容量 | 首次 Decode | 重复 Decode |
 |---|---:|---:|---:|
-| 纯文本 | 8K | **42.16 tok/s** | **42.86–46.26 tok/s** |
-| GPU 图像编码器驻留 | 8K | **39.18 tok/s** | **42.70–42.97 tok/s** |
-| 纯文本 | 128K | **46.30 tok/s** | **47.56–48.89 tok/s** |
-| GPU 图像编码器驻留 | 128K | **42.23 tok/s** | **45.57–48.47 tok/s** |
+| 纯文本 | 8K | **45.74 tok/s** | **47.83–48.44 tok/s** |
+| GPU 图像编码器驻留 | 8K | **40.30 tok/s** | **42.59–43.98 tok/s** |
+| 纯文本 | 128K | **46.02 tok/s** | **50.59–51.80 tok/s** |
+| GPU 图像编码器驻留 | 128K | **44.29 tok/s** | **47.59–51.50 tok/s** |
 
 128K 表示配置容量，上述测试使用短提示词；重复请求复用 2,182 个输入 token。
-WebUI 写作实测：128K 上下文容量，关闭 MCP tools 和 vision，24-token 提示词生成
+历史 WebUI 写作实测（10 月 30 日，engine 0.1.54）：128K 上下文容量，关闭 MCP tools 和 vision，24-token 提示词生成
 7,144 token，平均 decode **38.2 tok/s**。
 
-`tools/strata_bench.py`（64K、GPU vision 驻留、每项三次，取中位数）：短聊天 decode **37.4 tok/s**，
-4K / 16K prefill **725.6 / 898.7 tok/s**，agent TTFT **6.15 s**。
+`terminal/tools/strata_bench.py`（64K、GPU vision 驻留、每项三次，取中位数）：短聊天 decode **39.3 tok/s**，
+4K / 16K prefill **1050.8 / 1412.4 tok/s**，agent TTFT **4.79 s**。
 
 完整参数、实际专家 RAM/VRAM、prefill 分配及工具提示词结果见 [Windows SYCL benchmark](docs/SYCL_WINDOWS.md#benchmark)。
 
@@ -57,7 +57,7 @@ WebUI 写作实测：128K 上下文容量，关闭 MCP tools 和 vision，24-tok
 安装 Visual Studio C++ 桌面工具、Intel oneAPI DPC++/C++ Compiler、oneMKL、CMake 3.24+、Ninja 和 Git，然后运行：
 
 ```bat
-sycl\build-release-windows.bat
+engine\sycl\build-release-windows.bat
 ```
 
 产物：`dist/strata-windows-x64-sycl.zip`。安装本地构建的包：
